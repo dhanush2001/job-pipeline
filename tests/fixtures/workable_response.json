@@ -1,0 +1,24 @@
+{
+  "name": "Acme",
+  "description": "Acme careers",
+  "jobs": [
+    {
+      "title": "New Grad Backend Engineer",
+      "shortcode": "W1",
+      "code": "ENG-1",
+      "employment_type": "Full-time",
+      "department": "Engineering",
+      "url": "https://apply.workable.com/acme/j/W1",
+      "shortlink": "https://acme.workable.com/j/W1",
+      "application_url": "https://apply.workable.com/acme/j/W1/apply",
+      "location": {
+        "location_str": "Austin, TX, United States",
+        "country": "United States",
+        "city": "Austin",
+        "region": "TX"
+      },
+      "description": "Join us as a new grad backend engineer. Python and distributed systems.",
+      "requirements": "BS or MS in Computer Science."
+    }
+  ]
+}

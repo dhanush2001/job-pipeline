@@ -1,0 +1,35 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{parskip}
+\usepackage[T1]{fontenc}
+\pagestyle{empty}
+
+\begin{document}
+
+\begin{flushleft}
+{\large \textbf{\VAR{letter.name}}} \\
+\VAR{letter.email} \textbar\ \VAR{letter.phone} \\
+\end{flushleft}
+
+\vspace{1em}
+
+\VAR{letter.date}
+
+\vspace{1em}
+
+Hiring Team \\
+\VAR{letter.company}
+
+\vspace{1em}
+
+\BLOCK{for para in letter.paragraphs}
+\VAR{para}
+
+\BLOCK{endfor}
+
+\vspace{1em}
+
+Sincerely, \\
+\VAR{letter.name}
+
+\end{document}

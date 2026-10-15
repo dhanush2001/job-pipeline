@@ -1,0 +1,168 @@
+%-------------------------
+% Tailored CV template (Jinja2 version).
+% The Jinja delimiters this repo uses (the VAR and BLOCK forms) are parsed
+% EVERYWHERE in this file, comments included -- so never write them inside a
+% comment, or the template fails to compile. Rendered fields come from the
+% merged resume dict; see src/render_resume.py for the delimiter configuration.
+%-------------------------
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\definecolor{accent}{HTML}{1F3A5F}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Margins
+\addtolength{\oddsidemargin}{-0.6in}
+\addtolength{\evensidemargin}{-0.6in}
+\addtolength{\textwidth}{1.19in}
+\addtolength{\topmargin}{-.9in}
+\addtolength{\textheight}{1.8in}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large\color{accent}
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+%------- custom commands -------
+\newcommand{\resumeItem}[1]{
+  \item\small{ {#1 \vspace{-4pt}} }
+}
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+\newcommand{\resumeProjectEntry}[3]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-3pt}
+    {\textit{\small #3}}\vspace{-9pt}
+}
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-9pt}}
+
+%===============================================================
+\begin{document}
+
+%---------- HEADING ----------
+\begin{center}
+    \textbf{\Huge \scshape \VAR{resume.name}} \\ \vspace{2pt}
+    \small \VAR{resume.location} $|$ \VAR{resume.phone} $|$
+    \href{mailto:\VAR{resume.email}}{\underline{\VAR{resume.email}}} $|$
+    \href{https://www.linkedin.com/in/\VAR{resume.linkedin_handle}/}{\underline{linkedin.com/in/\VAR{resume.linkedin_handle}}} $|$
+    \href{https://github.com/\VAR{resume.github_handle}}{\underline{github.com/\VAR{resume.github_handle}}}
+\end{center}
+
+\BLOCK{if resume.summary}
+%---------- SUMMARY (only rendered if a summary is present) ----------
+\section{Summary}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{\VAR{resume.summary}}}
+ \end{itemize}
+\BLOCK{endif}
+
+%---------- TECHNICAL SKILLS ----------
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+\BLOCK{for group in resume.skills}
+     \textbf{\VAR{group.category}}{: \VAR{group.entries}} \\
+\BLOCK{endfor}
+    }}
+ \end{itemize}
+
+\BLOCK{if resume.experience}
+%---------- PROFESSIONAL EXPERIENCE ----------
+\section{Professional Experience}
+  \resumeSubHeadingListStart
+\BLOCK{for job in resume.experience}
+    \resumeSubheading
+      {\VAR{job.company} \textnormal{\textbar} \VAR{job.title}}{\VAR{job.dates}}
+      {\textnormal{\textit{Technologies: \VAR{job.technologies}}}}{\VAR{job.location}}
+      \resumeItemListStart
+\BLOCK{for bullet in job.bullets}
+        \resumeItem{\VAR{bullet}}
+\BLOCK{endfor}
+      \resumeItemListEnd
+\BLOCK{endfor}
+  \resumeSubHeadingListEnd
+\BLOCK{endif}
+
+\BLOCK{if resume.projects}
+%---------- PROJECT EXPERIENCE ----------
+\section{Project Experience}
+    \resumeSubHeadingListStart
+\BLOCK{for proj in resume.projects}
+      \resumeProjectEntry
+          {\VAR{proj.name}}{\VAR{proj.dates}}
+          {\BLOCK{if proj.technologies}Technologies: \VAR{proj.technologies}\BLOCK{endif}}
+          \resumeItemListStart
+\BLOCK{for bullet in proj.bullets}
+            \resumeItem{\VAR{bullet}}
+\BLOCK{endfor}
+          \resumeItemListEnd
+\BLOCK{endfor}
+    \resumeSubHeadingListEnd
+\BLOCK{endif}
+
+\BLOCK{if resume.education}
+%---------- EDUCATION ----------
+\section{Education}
+  \resumeSubHeadingListStart
+\BLOCK{for edu in resume.education}
+    \resumeSubheading
+      {\VAR{edu.school}}{\VAR{edu.location}}
+      {\VAR{edu.degree}}{\VAR{edu.dates}}
+\BLOCK{if edu.bullets}
+      \resumeItemListStart
+\BLOCK{for bullet in edu.bullets}
+        \resumeItem{\VAR{bullet}}
+\BLOCK{endfor}
+      \resumeItemListEnd
+\BLOCK{endif}
+\BLOCK{endfor}
+  \resumeSubHeadingListEnd
+\BLOCK{endif}
+
+\BLOCK{if resume.certifications}
+%---------- AWARDS & CERTIFICATIONS (per-role gated; see select_certifications) ----------
+\section{Awards \& Certifications}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+\BLOCK{for cert in resume.certifications}
+     \textbf{\VAR{cert.name}}\BLOCK{if cert.detail}{: \VAR{cert.detail}}\BLOCK{endif}\BLOCK{if cert.issuer}{ \textnormal{\textbar} \VAR{cert.issuer}\BLOCK{if cert.date} \textnormal{(\VAR{cert.date})}\BLOCK{endif}}\BLOCK{endif} \\
+\BLOCK{endfor}
+    }}
+ \end{itemize}
+\BLOCK{endif}
+
+\end{document}

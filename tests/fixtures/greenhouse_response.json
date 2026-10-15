@@ -1,0 +1,18 @@
+{
+  "jobs": [
+    {
+      "id": 4123456,
+      "title": "Software Engineer, New Grad",
+      "location": {"name": "San Francisco, CA"},
+      "absolute_url": "https://boards.greenhouse.io/examplecorp/jobs/4123456",
+      "content": "<p>We are looking for a new grad SWE with Python and distributed systems experience.</p>"
+    },
+    {
+      "id": 4123457,
+      "title": "Senior Staff Engineer",
+      "location": {"name": "Remote"},
+      "absolute_url": "https://boards.greenhouse.io/examplecorp/jobs/4123457",
+      "content": "<p>10+ years experience required, leadership role.</p>"
+    }
+  ]
+}

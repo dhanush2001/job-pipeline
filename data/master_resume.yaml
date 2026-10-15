@@ -1,0 +1,96 @@
+# SAMPLE master resume -- all fictional. Copy to data/master_resume.yaml and
+# replace with your real content:  cp data/master_resume.example.yaml data/master_resume.yaml
+#
+# This file is the SOURCE OF TRUTH for tailoring. The model may reorder, trim,
+# and rephrase what's here, but never invent beyond it. The grounding checker
+# only accepts numbers it can trace to this file, your GitHub repos, or the job
+# posting -- so any real metric you want usable must live here.
+#
+# WRITE PLAIN TEXT. No LaTeX. Special characters (& % $ # _) are escaped at
+# render time. For bold use **markdown**. No math mode -- write arrows as "to".
+# The key is "entries", not "items" (Jinja resolves .items to a dict method).
+
+name: "Jane Doe"
+location: "Anytown, USA"
+phone: "(555) 555-5555"
+email: "jane.doe@example.com"
+linkedin_handle: "janedoe"      # linkedin.com/in/<handle>
+github_handle: "janedoe"        # github.com/<handle>
+
+# Shown on every resume. The pipeline also generates a per-role summary that
+# replaces this when tailoring runs; this is the seed and the fallback.
+summary: "M.S. Computer Science candidate graduating 2026, with internship experience shipping production software. Built an ML-backed service handling **10k** requests/day and raised test coverage from **60%** to **85%**. Seeking new-grad software / ML engineering roles."
+
+# Grouped by category. Tailoring reorders items WITHIN each group by relevance
+# and may drop irrelevant ones; it never invents categories or technologies.
+skills:
+  - category: "Languages"
+    entries: "Python, SQL, JavaScript, TypeScript, Java, C/C++"
+  - category: "Machine Learning"
+    entries: "PyTorch, scikit-learn, Hugging Face Transformers, pandas, NumPy"
+  - category: "Web & Backend"
+    entries: "FastAPI, Flask, React, Node.js, REST APIs, Pydantic"
+  - category: "Databases"
+    entries: "PostgreSQL, MySQL, MongoDB, Redis"
+  - category: "Tools & Platforms"
+    entries: "Git, GitHub Actions, CI/CD, Linux/Unix, pytest"
+
+# Every experience entry needs a stable `id` -- the tailoring step uses it to
+# map rewritten bullets back to the right job between runs.
+experience:
+  - id: "acme-intern-2025"
+    company: "Acme Corporation"
+    title: "Software Engineering Intern"
+    dates: "May 2025 -- August 2025"
+    technologies: "Python, FastAPI, PostgreSQL, React, Git"
+    location: "Anytown, USA"
+    bullets:
+      - "Shipped a production **REST API** used by an internal tool, owning the feature end to end from schema design to deployment"
+      - "Cut a nightly batch job's runtime by **30%** by adding an index and batching database writes"
+      - "Raised service test coverage from **60%** to **85%** with a **pytest** suite wired into **CI**"
+
+# Order = master priority. Per-job tailoring picks the 2-4 most relevant and may
+# rewrite bullets (grounded in the numbers below). If github.username is set in
+# config.yaml, repos are fetched and can stand in for this static list.
+projects:
+  - name: "Job Application Pipeline"
+    dates: "2025 -- Present"
+    technologies: "Python, FastAPI, Jinja2, LaTeX"
+    bullets:
+      - "Built an end-to-end pipeline that scans ATS job boards, scores postings against a master resume, and tailors a resume + cover letter per role with an LLM"
+      - "Added a grounding checker that flags any number or entity in generated text not traceable to the source, preventing fabricated metrics"
+
+  - name: "Realtime Chat Service"
+    dates: "2024"
+    technologies: "Python, WebSockets, Redis, Docker"
+    bullets:
+      - "Built a WebSocket chat backend supporting **1,000** concurrent connections using an async event loop and a **Redis** pub/sub fan-out"
+      - "Added presence and typing indicators with a per-room **Redis** TTL store"
+
+education:
+  - school: "State University"
+    location: "Anytown, USA"
+    degree: "Master of Science in Computer Science"
+    dates: "Expected 2026"
+    bullets:
+      - "**Coursework:** Machine Learning, Natural Language Processing, Database Systems, Analysis of Algorithms"
+
+  - school: "State University"
+    location: "Anytown, USA"
+    degree: "Bachelor of Science in Computer Science"
+    dates: "2024"
+    bullets:
+      - "**Coursework:** Data Structures & Algorithms, Operating Systems, Software Engineering"
+
+# Awards & Certifications. Each entry has `name` and an optional `detail` (text
+# after the colon). An entry may carry `include_if:` -- a list of trigger terms
+# -- and is then shown ONLY when the target job's title/description mentions one
+# (word-boundary, case-insensitive; "java" matches "Java" but NOT "JavaScript").
+# No include_if => always shown. Gating is deterministic (never LLM-decided).
+certifications:
+  - name: "1st Place, University Hackathon 2025"
+    detail: "Built a real-time accessibility tool in 24 hours"
+  # Example of a role-gated entry: appears only on AWS/cloud postings.
+  - name: "AWS Certified Cloud Practitioner"
+    detail: "Completed 2025"
+    include_if: ["aws", "cloud", "ec2", "s3", "lambda"]

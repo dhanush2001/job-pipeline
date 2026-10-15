@@ -1,0 +1,46 @@
+[
+  {
+    "name": "repo-radar",
+    "description": "Agentic system that monitors a research GitHub repo and sends a daily digest",
+    "language": "Python",
+    "topics": ["agents", "llm", "automation"],
+    "stargazers_count": 14,
+    "pushed_at": "2026-08-01T10:22:31Z",
+    "html_url": "https://github.com/exampleuser/repo-radar",
+    "fork": false,
+    "archived": false
+  },
+  {
+    "name": "thin-repo",
+    "description": null,
+    "language": null,
+    "topics": [],
+    "stargazers_count": 0,
+    "pushed_at": "2026-05-14T08:00:00Z",
+    "html_url": "https://github.com/exampleuser/thin-repo",
+    "fork": false,
+    "archived": false
+  },
+  {
+    "name": "forked-thing",
+    "description": "Someone else's project",
+    "language": "Go",
+    "topics": [],
+    "stargazers_count": 900,
+    "pushed_at": "2026-07-01T00:00:00Z",
+    "html_url": "https://github.com/exampleuser/forked-thing",
+    "fork": true,
+    "archived": false
+  },
+  {
+    "name": "old-archived",
+    "description": "Retired coursework",
+    "language": "Java",
+    "topics": [],
+    "stargazers_count": 1,
+    "pushed_at": "2023-01-01T00:00:00Z",
+    "html_url": "https://github.com/exampleuser/old-archived",
+    "fork": false,
+    "archived": true
+  }
+]

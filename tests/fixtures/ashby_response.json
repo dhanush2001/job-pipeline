@@ -1,0 +1,23 @@
+{
+  "jobs": [
+    {
+      "id": "a1",
+      "title": "Software Engineer, New Grad",
+      "location": "Remote - US",
+      "isRemote": true,
+      "jobUrl": "https://jobs.ashbyhq.com/acme/a1",
+      "applyUrl": "https://jobs.ashbyhq.com/acme/a1/application",
+      "descriptionPlain": "We are hiring a new grad software engineer. Python, backend, distributed systems.",
+      "descriptionHtml": "<p>We are hiring a new grad software engineer.</p>"
+    },
+    {
+      "id": "a2",
+      "title": "Senior Staff Engineer",
+      "location": "New York, NY",
+      "isRemote": false,
+      "jobUrl": "https://jobs.ashbyhq.com/acme/a2",
+      "applyUrl": "https://jobs.ashbyhq.com/acme/a2/application",
+      "descriptionPlain": "Senior staff role for an experienced engineer."
+    }
+  ]
+}

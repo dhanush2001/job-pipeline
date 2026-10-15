@@ -1,0 +1,16 @@
+{
+  "id": "SR1",
+  "name": "Software Engineer New Grad",
+  "jobAd": {
+    "sections": {
+      "jobDescription": {
+        "title": "Job Description",
+        "text": "Build and operate backend services in Python."
+      },
+      "qualifications": {
+        "title": "Qualifications",
+        "text": "New grad with a computer science degree."
+      }
+    }
+  }
+}

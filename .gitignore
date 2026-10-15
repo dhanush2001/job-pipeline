@@ -1,0 +1,36 @@
+# Secrets -- NEVER commit. Copy .env.example to .env and fill in locally.
+.env
+
+# -----------------------------------------------------------------------------
+# config.yaml and data/master_resume.yaml ship with GENERIC SAMPLE data so the
+# repo runs and tests pass out of the box. Once you put YOUR real name, contact
+# details, and resume into them, this repo holds personal data -- keep your fork
+# PRIVATE, or move those two files into .gitignore. Real API keys never go in
+# either file; they come from .env / GitHub Actions secrets.
+# -----------------------------------------------------------------------------
+
+# Generated application packages and reports (per-run, personal output)
+output/resumes/**
+!output/resumes/.gitkeep
+output/cover_letters/**
+!output/cover_letters/.gitkeep
+output/referrals/
+output/grounding_review.md
+output/apply_index.md
+output/apply_index.txt
+output/ats_report.md
+output/judge_review.md
+output/token_usage.txt
+output/needs_description.txt
+
+# Run state -- personal (jobs you've seen / queued / token spend)
+data/apply_queue.json
+data/seen_jobs.json
+data/usage_log.jsonl
+data/bullet_bank.md
+data/*.tmp
+
+# Caches / Python
+.cache/
+__pycache__/
+*.pyc

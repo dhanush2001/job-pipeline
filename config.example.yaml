@@ -1,0 +1,142 @@
+# Copy this to config.yaml and fill in your details.
+# Secrets (DEEPSEEK_API_KEY, ADZUNA_*) come from environment variables /
+# GitHub Actions secrets, NOT from this file.
+
+candidate:
+  first_name: "Jane"
+  last_name: "Doe"
+  email: "jane.doe@example.com"
+  phone: "555-555-5555"
+  linkedin_url: "linkedin.com/in/janedoe"
+
+resume:
+  master_data: "data/master_resume.yaml"
+  template: "templates/resume.tex.j2"
+  output_dir: "output/resumes"
+  include_summary: true    # add a tailored 2-line Summary section to the resume
+  force_one_page: true     # auto-trim + re-render if a resume exceeds one page
+  # Optional menu of pre-written project bullets grouped by angle. DeepSeek may
+  # pick and rephrase from it per role; its numbers count as a grounded source
+  # so real metrics in it are not flagged as fabrication. Set "" to disable.
+  bullet_bank: ""
+
+sources:
+  greenhouse:
+    - "examplecorp"
+  lever:
+    - "anotherexample"
+  # Additional ATS platforms -- list each company's board slug (the token in
+  # its careers URL). Ashby/Workable include descriptions inline; SmartRecruiters
+  # costs one extra request per posting.
+  ashby: []            # jobs.ashbyhq.com/<slug>
+  smartrecruiters: []  # jobs.smartrecruiters.com/<Company>
+  workable: []         # apply.workable.com/<slug>
+  adzuna:
+    # General-board aggregator (needs free ADZUNA_APP_ID/APP_KEY). Runs every
+    # query against every country code -> cost per scan = countries x queries x
+    # max_pages calls (free tier ~250/day). A single `keywords` string + single
+    # `country` also still works.
+    countries: ["us", "ca", "gb", "de", "nl", "au"]
+    location: ""
+    max_pages: 2
+    queries:
+      - "software engineer new grad"
+      - "data analyst"
+      - "machine learning engineer"
+
+matching:
+  must_have_keywords: ["python", "software engineer"]
+  nice_to_have_keywords: ["machine learning", "new grad", "entry level", "aws", "react"]
+  # exclude_keywords match the TITLE only (drop "Senior Engineer", not every job
+  # whose description says "senior"). Put experience/eligibility bars that live
+  # in the body under exclude_description_keywords instead.
+  exclude_keywords: ["senior", "staff", "principal", "director", "manager"]
+  exclude_description_keywords: ["5+ years", "8+ years", "10+ years", "security clearance"]
+  min_score: 0.1
+  # ATS-based selection: re-rank the filtered jobs by how well your skills match
+  # each posting, then optionally drop weak matches.
+  min_jd_skills: 6   # ignore postings naming fewer than N skills (avoids trivial 100% matches)
+  min_ats: 75        # only apply to postings you match >= this % (0 = keep all, just re-sort)
+  prefer_engineering_roles: true  # rank SWE/ML/data roles first, drop business/customer roles
+  # Keep only roles located in these countries (dropped before any LLM call).
+  # "Remote" postings with no country are always kept. [] = keep every country.
+  target_countries: ["United States", "Canada", "United Kingdom", "Germany", "Netherlands", "Australia"]
+
+github:
+  # Your GitHub username. Repos are pulled once per run and fed to the
+  # tailoring step, which picks the 2-4 most relevant ones per role.
+  # Leave username blank to disable and use the static projects list from
+  # data/master_resume.yaml instead.
+  username: ""
+  max_repos: 12          # repo-list request + 1 README request each
+  include_forks: false   # forks usually aren't your work
+  include_readmes: true  # much better tailoring; costs 1 API call per repo
+  # GITHUB_TOKEN comes from the environment / Actions secrets.
+  # Unauthenticated = 60 req/hour PER IP and WILL fail on shared CI runners.
+
+quality:
+  # Bundles model + reasoning. Anything set explicitly under `deepseek:`
+  # below overrides the profile.
+  #   fast     -> V4 Flash, no thinking. ~$2.50/mo at 100/day.
+  #   balanced -> V4 Flash + low thinking. Good default.
+  #   high     -> V4 Pro + high thinking. Best output; ~10x fast, still small.
+  profile: "high"
+  grounding_report: "output/grounding_review.md"
+
+deepseek:
+  # Leave model/reasoning blank to follow the quality profile above.
+  model: ""
+  reasoning: ""
+  concurrency: 6      # parallel API calls; raise cautiously if you see 429s
+
+  # NOTE: thinking mode ignores temperature -- it only applies when
+  # reasoning resolves to "disabled" (the `fast` profile).
+  temperature: 0.4
+  # max_tokens: 16000  # profile sets this; raise if JSON comes back truncated
+
+  # Local on-disk cache of API responses, keyed by the exact request. When ON,
+  # re-running reuses saved responses instead of paying again -- handy while
+  # iterating on the template/rendering. OFF for a genuine fresh run. Delete
+  # the dir to clear it. Separate from DeepSeek's server-side prompt caching.
+  cache:
+    enabled: false
+    dir: ".cache/deepseek"
+
+judge:
+  # Second LLM pass: recruiter/hiring-manager review that rewrites experience
+  # bullets in Google XYZ form and weaves in missing keywords. Doubles per-job
+  # API cost. Writes output/judge_review.md. Set false to skip.
+  enabled: false
+
+cover_letter:
+  enabled: true
+  template: "templates/cover_letter.tex.j2"
+  output_dir: "output/cover_letters"
+
+referrals:
+  # Drafts only. Nothing is ever sent -- see README on LinkedIn's caps,
+  # which are far lower than this pipeline's generation throughput.
+  # One plain-text (.txt) file per company is written into this directory.
+  output_dir: "output/referrals"
+
+limits:
+  # How many application packages to generate per run.
+  max_jobs_per_run: 100
+
+output:
+  # Copy-paste index of every generated job (score, company, role, apply link,
+  # resume PDF, cover-letter .txt). Your "here are the links" page.
+  apply_index: "output/apply_index.md"
+  ats_report: "output/ats_report.md"   # per-job ATS keyword-match + missing keywords
+  judge_review: "output/judge_review.md"  # what the judge agent flagged + fixed
+  # Fill-in worklist for jobs with no fetchable description. Paste each between
+  # the marker lines, then: python -m src.tailor_worklist <this file>
+  needs_description: "output/needs_description.txt"
+  # Finished PDFs are copied into a job-applications/ subfolder of each of these
+  # (only ones that exist), for manual upload. Set to [] to disable copying.
+  handoff_dirs:
+    - "~/Downloads"
+    - "~/Desktop"
+
+apply_queue_path: "data/apply_queue.json"
+seen_log_path: "data/seen_jobs.json"

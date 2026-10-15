@@ -1,0 +1,17 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 1,
+  "content": [
+    {
+      "id": "SR1",
+      "name": "Software Engineer New Grad",
+      "location": {
+        "city": "Seattle",
+        "region": "WA",
+        "country": "us",
+        "remote": false
+      }
+    }
+  ]
+}
