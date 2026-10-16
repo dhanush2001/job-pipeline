@@ -54,6 +54,6 @@ jobs:
         run: |
           git config user.name "job-pipeline-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add -f data/seen_jobs.json data/apply_queue.json
+          git add data/seen_jobs.json data/apply_queue.json
           git diff --cached --quiet || git commit -m "Update job scan results [skip ci]"
           git push

@@ -24,8 +24,6 @@ output/token_usage.txt
 output/needs_description.txt
 
 # Run state -- personal (jobs you've seen / queued / token spend)
-data/apply_queue.json
-data/seen_jobs.json
 data/usage_log.jsonl
 data/bullet_bank.md
 data/*.tmp
