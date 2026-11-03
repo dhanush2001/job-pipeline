@@ -1,0 +1,65 @@
+\documentclass[10.5pt,letterpaper]{article}
+\usepackage[margin=0.65in]{geometry}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\pagestyle{empty}
+\setlist[itemize]{leftmargin=*, topsep=1pt, itemsep=1pt, parsep=0pt}
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titlespacing{\section}{0pt}{8pt}{4pt}
+
+\begin{document}
+
+\begin{center}
+    {\LARGE \textbf{\VAR{resume.name}}} \\ \vspace{2pt}
+    \VAR{resume.email} \textbar\ \VAR{resume.phone} \textbar\ \VAR{resume.location}
+    \BLOCK{if resume.links}
+    \\ \VAR{resume.links | join(' \\textbar\\ ')}
+    \BLOCK{endif}
+\end{center}
+
+\BLOCK{if resume.summary}
+\section*{Summary}
+\VAR{resume.summary}
+\BLOCK{endif}
+
+\BLOCK{if resume.skills}
+\section*{Skills}
+\VAR{resume.skills | join(', ')}
+\BLOCK{endif}
+
+\BLOCK{if resume.experience}
+\section*{Experience}
+\BLOCK{for job in resume.experience}
+\textbf{\VAR{job.title}} --- \VAR{job.company} \hfill \VAR{job.dates} \\
+\BLOCK{if job.bullets}
+\begin{itemize}
+\BLOCK{for bullet in job.bullets}
+    \item \VAR{bullet}
+\BLOCK{endfor}
+\end{itemize}
+\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+\BLOCK{if resume.education}
+\section*{Education}
+\BLOCK{for edu in resume.education}
+\textbf{\VAR{edu.school}} --- \VAR{edu.degree} \hfill \VAR{edu.dates} \\
+\BLOCK{endfor}
+\BLOCK{endif}
+
+\BLOCK{if resume.projects}
+\section*{Projects}
+\BLOCK{for proj in resume.projects}
+\textbf{\VAR{proj.name}} \\
+\begin{itemize}
+\BLOCK{for bullet in proj.bullets}
+    \item \VAR{bullet}
+\BLOCK{endfor}
+\end{itemize}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+\end{document}

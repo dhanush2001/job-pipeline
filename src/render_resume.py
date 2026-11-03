@@ -4,12 +4,13 @@ render_resume.py
 Merges tailored content (from tailor_resume.py) into the master resume data,
 renders it through a Jinja2-templated .tex file, and compiles that to a PDF
 with latexmk. Jinja2's default delimiters ({{ }}, {% %}) collide with LaTeX
-syntax, so this uses LaTeX-safe delimiters instead (see templates/resume.tex.j2
+syntax, so this uses LaTeX-safe delimiters instead (see resume_template.tex.j2
 for the matching template config).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import shutil
@@ -22,6 +23,7 @@ import jinja2
 
 from datetime import date
 
+from src.ats_score import _has_skill, skills_in
 from src.tailor_resume import ApplicationPackage
 
 logger = logging.getLogger(__name__)
@@ -132,7 +134,12 @@ def _project_metadata_lookup(
         name = _norm_name(repo.get("name", ""))
         if name and name not in lookup:
             lookup[name] = {
-                "dates": repo.get("last_pushed", ""),
+                # No date for GitHub-only projects: a repo's last-push date is when
+                # you last touched the code, not when you did the work -- a 2022
+                # project pushed in 2026 would show up as "2026-09-03". Leaving the
+                # date off is honest; add the project to master_resume.yaml with
+                # real dates if you want them shown.
+                "dates": "",
                 "technologies": repo.get("language", ""),
             }
     return lookup
@@ -142,7 +149,7 @@ def _match_project_meta(name: str, lookup: dict[str, dict[str, str]]) -> dict[st
     """
     Exact match first, then a lenient substring match either direction -- the
     model sometimes trims or extends a project's name while tailoring (e.g.
-    "LLaVA-Med" vs "LLaVA-Med: Medical Data Platform").
+    "MedVQA" vs "MedVQA: Medical Data Platform").
     """
     key = _norm_name(name)
     if not key:
@@ -153,6 +160,113 @@ def _match_project_meta(name: str, lookup: dict[str, dict[str, str]]) -> dict[st
         if source_name and (source_name in key or key in source_name):
             return meta
     return None
+
+
+# Never drop below this many skills: a near-empty section reads worse than an
+# untrimmed one (and means the model returned an odd list).
+MIN_TAILORED_SKILLS = 8
+# A group with at least FIELD_MIN_HITS relevant skills is a field this role
+# works in, so its neighbouring skills are kept too (in master order), up to
+# FIELD_FILL entries for the group.
+FIELD_MIN_HITS = 2
+FIELD_FILL = 7
+# A shown group never has fewer than this many skills: a group with only 1-2
+# relevant ones is padded with the group's next skills (in master order).
+MIN_PER_GROUP = 3
+
+
+def _mentions(entry: str, term: str) -> bool:
+    """Does a resume skill entry name this term? "Microsoft Azure" names
+    "Azure"; "LLM APIs (OpenAI, Azure OpenAI)" names "OpenAI"."""
+    e, t = entry.lower().strip(), term.lower().strip()
+    if not t:
+        return False
+    if e == t:
+        return True
+    pat = (r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9+#])") if len(t) >= 2 else None
+    return bool(pat and re.search(pat, e)) or (len(e) >= 3 and e in t)
+
+
+# Other ways postings name a master entry ("Leverage AI tools in your workflow").
+_ENTRY_ALIASES = {
+    "ai coding tools": ["AI tools", "AI coding", "AI-assisted", "AI assistants",
+                        "coding assistants", "AI-powered development"],
+}
+
+
+def _entry_terms(entry: str) -> list[str]:
+    """The names a skill entry goes by: "LLM APIs (OpenAI, Azure OpenAI)" ->
+    ["LLM APIs", "OpenAI", "Azure OpenAI"]; "C/C++" -> ["C/C++", "C++"]."""
+    outer = re.sub(r"\([^)]*\)", "", entry).strip()
+    inner = [x.strip() for m in re.findall(r"\(([^)]*)\)", entry) for x in re.split(r"[,;]", m)]
+    terms = [outer] + [x for x in inner if x and not re.search(r"\b(daily|use|familiarity|tests?)\b", x)]
+    terms += [p.strip() for p in outer.split("/") if "/" in outer and len(p.strip()) >= 2]
+    terms += _ENTRY_ALIASES.get(outer.lower(), [])
+    return [x for x in terms if len(x) >= 2]
+
+
+def _named_in(job_text_lc: str, entry: str) -> bool:
+    """Does the posting name this skill entry (or one of its parts) outright?"""
+    for term in _entry_terms(entry):
+        pat = r"(?<![a-z0-9])" + re.escape(term.lower()) + r"(?![a-z0-9+#])"
+        if re.search(pat, job_text_lc):
+            return True
+    return False
+
+
+def tailor_skills(master_skills: Any, tailored_flat: list[str], job_text: str = "",
+                  core: list[str] | None = None) -> Any:
+    """
+    The skills section for ONE role: keep a master entry when the posting
+    names it (exactly or by a known synonym -- deterministic, so a skill the
+    posting asks for is never dropped), the model ranked it for this posting,
+    or it is a core skill. Skills you don't have are never added. Groups keep their
+    names; a group with nothing relevant is hidden; a group with several
+    relevant skills keeps its closely related ones too (see FIELD_FILL); groups
+    are ordered by their most relevant skill ("Languages" stays first). Falls
+    back to the full list when tailoring would leave fewer than
+    MIN_TAILORED_SKILLS.
+    """
+    if not (master_skills and isinstance(master_skills[0], dict)):
+        return master_skills
+    picks = [s for s in (tailored_flat or []) if isinstance(s, str) and s.strip()]
+    jd = skills_in(job_text) if job_text else set()
+    jd_lc = (job_text or "").lower()
+    core = core or []
+    if not picks and not jd:
+        return master_skills
+
+    def rank(entry: str) -> int | None:
+        # Named in the posting -> always kept, ahead of everything else.
+        if jd_lc and _named_in(jd_lc, entry):
+            return -1
+        for i, p in enumerate(picks):
+            if _mentions(entry, p):
+                return i
+        if any(_has_skill(entry.lower(), s) for s in jd):
+            return len(picks)
+        if any(_mentions(entry, c) for c in core):
+            return len(picks) + 1
+        return None
+
+    groups = []
+    for gi, g in enumerate(master_skills):
+        ranked = [(rank(e), i, e) for i, e in enumerate(_split_entries(g.get("entries", "")))]
+        kept = sorted((r, i, e) for r, i, e in ranked if r is not None)
+        if kept:
+            # Same field as the role: add the group's other skills, in master
+            # order (put niche ones last in master_resume.yaml) -- up to
+            # FIELD_FILL when several are relevant, else up to MIN_PER_GROUP.
+            target = FIELD_FILL if len(kept) >= FIELD_MIN_HITS else MIN_PER_GROUP
+            extra = [(10**6, i, e) for r, i, e in ranked if r is None]
+            kept += extra[:max(0, target - len(kept))]
+        if kept:
+            first = -1 if str(g.get("category", "")).lower().startswith("language") else kept[0][0]
+            groups.append((first, gi, {**g, "entries": ", ".join(e for _, _, e in kept)}))
+    total = sum(len(_split_entries(g["entries"])) for _, _, g in groups)
+    if total < MIN_TAILORED_SKILLS:
+        return master_skills
+    return [g for _, _, g in sorted(groups, key=lambda x: (x[0], x[1]))]
 
 
 def _reconcile_skills(master_skills: Any, tailored_flat: list[str]) -> Any:
@@ -168,21 +282,88 @@ def _reconcile_skills(master_skills: Any, tailored_flat: list[str]) -> Any:
     - Flat master ([str]): the tailored flat list is the right shape already.
     """
     if not tailored_flat:
-        return master_skills
+        return _dedupe_skills(master_skills)
     if master_skills and isinstance(master_skills[0], dict):
         priority = {s.strip().lower(): i for i, s in enumerate(tailored_flat)}
         regrouped = []
         for group in master_skills:
-            entries = [e.strip() for e in str(group.get("entries", "")).split(",") if e.strip()]
+            entries = _split_entries(group.get("entries", ""))
             entries.sort(key=lambda e: priority.get(e.lower(), 10**6))  # stable: unknowns keep order
             regrouped.append({**group, "entries": ", ".join(entries)})
-        return regrouped
-    return tailored_flat
+        return _dedupe_skills(regrouped)
+    return _dedupe_skills(tailored_flat)
+
+
+def _split_entries(entries: Any) -> list[str]:
+    """Split "A, B (x, y), C" on top-level commas only -- a comma inside
+    parentheses belongs to that entry ("LLM APIs (OpenAI, Azure OpenAI)")."""
+    out, buf, depth = [], "", 0
+    for ch in str(entries or ""):
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth <= 0:
+            out.append(buf.strip())
+            buf = ""
+        else:
+            buf += ch
+    out.append(buf.strip())
+    return [e for e in out if e]
+
+
+def _dedupe_skills(skills: Any) -> Any:
+    """Each skill appears once on the page: a later repeat (case-insensitive,
+    in any group) is dropped, and a group left empty is removed."""
+    seen: set[str] = set()
+
+    def first(e: str) -> bool:
+        k = re.sub(r"\s+", " ", e.strip().lower())
+        if k in seen:
+            return False
+        seen.add(k)
+        return True
+
+    if skills and isinstance(skills[0], dict):
+        out = []
+        for g in skills:
+            kept = [e for e in _split_entries(g.get("entries", "")) if first(e)]
+            if kept:
+                out.append({**g, "entries": ", ".join(kept)})
+        return out
+    return [s for s in (skills or []) if isinstance(s, str) and first(s)]
+
+
+def _gate_hits(item: dict[str, Any], text_lc: str, title_lc: str) -> bool:
+    """Does a conditional entry (include_if / title_include_if) match this job?
+    Unconditional entries always match."""
+    def hits(text: str, terms: list) -> bool:
+        return bool(text) and any(re.search(rf"\b{re.escape(str(t).lower())}\b", text) for t in terms)
+    triggers, title_triggers = item.get("include_if") or [], item.get("title_include_if") or []
+    if not triggers and not title_triggers:
+        return True
+    return hits(text_lc, triggers) or hits(title_lc, title_triggers)
+
+
+def _ungated(item: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in item.items() if k not in ("include_if", "title_include_if")}
+
+
+def scope_master(master: dict[str, Any], job_title: str = "", job_text: str = "") -> dict[str, Any]:
+    """The master resume as THIS job should see it: experience entries gated by
+    include_if / title_include_if are dropped when the job doesn't match (an IT
+    support job shows only on IT/help-desk roles). Applied before tailoring, so
+    the model can't mention a gated entry in bullets, summary or cover letter."""
+    exp = master.get("experience") or []
+    if not any(e.get("include_if") or e.get("title_include_if") for e in exp):
+        return master
+    scoped = dict(master)
+    scoped["experience"] = [_ungated(e) for e in exp
+                            if _gate_hits(e, (job_text or "").lower(), (job_title or "").lower())]
+    return scoped
 
 
 def select_certifications(
     certifications: list[dict[str, Any]] | None,
     job_text: str = "",
+    job_title: str = "",
 ) -> list[dict[str, Any]]:
     """Pick which certifications belong on THIS resume.
 
@@ -196,44 +377,49 @@ def select_certifications(
     and "Spring/Java" but NOT "JavaScript". With no job_text (e.g. a stub/dry
     render) only the unconditional certs are kept -- a conditional one needs a
     real signal to show up, never by default.
+
+    `title_include_if` terms are matched against the job TITLE only. Use it
+    for a word a description can mention in passing ("Python, Java or Go")
+    that only marks a matching role when it names the role ("Java Developer").
+    A cert with both lists shows when either one matches.
     """
     if not certifications:
         return []
     text_lc = (job_text or "").lower()
-    out: list[dict[str, Any]] = []
-    for cert in certifications:
-        triggers = cert.get("include_if") or []
-        clean = {k: v for k, v in cert.items() if k != "include_if"}
-        if not triggers:
-            out.append(clean)
-            continue
-        if text_lc and any(
-            re.search(rf"\b{re.escape(str(t).lower())}\b", text_lc) for t in triggers
-        ):
-            out.append(clean)
-    return out
+    title_lc = (job_title or "").lower()
+
+    return [_ungated(c) for c in certifications if _gate_hits(c, text_lc, title_lc)]
 
 
 def merge_tailored_content(
     master_resume: dict[str, Any],
     tailored: ApplicationPackage | None,
     github_repos: list[dict[str, Any]] | None = None,
-    include_summary: bool = False,
+    include_summary: bool | None = None,
     job_text: str = "",
+    job_title: str = "",
 ) -> dict[str, Any]:
     """Overlay tailored summary/skills/bullets onto the master resume structure.
+
+    include_summary: True always shows a summary, False never does, None (the
+    default) shows one only when the master resume has one.
 
     job_text (title + description of the target role) gates conditional
     certifications -- see select_certifications.
     """
     merged = dict(master_resume)  # shallow copy is enough; we rebuild nested pieces below
+    merged["skills"] = _dedupe_skills(master_resume.get("skills", []))
 
     # Certifications are factual and never rewritten by the model, so they're
     # resolved deterministically here (not via the LLM) and gated by the job.
     merged["certifications"] = select_certifications(
-        master_resume.get("certifications", []), job_text
+        master_resume.get("certifications", []), job_text, job_title
     )
 
+    merged["experience"] = scope_master(master_resume, job_title, job_text).get("experience", [])
+
+    if include_summary is False:
+        merged["summary"] = ""
     if tailored is None:
         return merged
 
@@ -243,14 +429,17 @@ def merge_tailored_content(
     # that too. When on, keep it short (see the prompt) so it stays one page.
     if include_summary and tailored.summary:
         merged["summary"] = tailored.summary
-    elif (master_resume.get("summary") or "").strip():
+    elif include_summary is None and (master_resume.get("summary") or "").strip():
         merged["summary"] = tailored.summary or master_resume["summary"]
 
     if tailored.skills:
         merged["skills"] = _reconcile_skills(master_resume.get("skills", []), tailored.skills)
+    if master_resume.get("tailor_skills", True):
+        merged["skills"] = _dedupe_skills(tailor_skills(
+            merged["skills"], tailored.skills, job_text, master_resume.get("core_skills")))
 
     new_experience = []
-    for entry in master_resume.get("experience", []):
+    for entry in merged["experience"]:
         entry = dict(entry)
         bullets = tailored.experience_bullets.get(entry.get("id"))
         if bullets:
@@ -294,11 +483,16 @@ def _pages_from_log(stdout: str) -> int | None:
 
 
 def _cap(data: dict[str, Any], drop_summary: bool, exp_bullets: int,
-         proj_bullets: int, max_projects: int) -> dict[str, Any]:
-    """Return a trimmed copy of the resume data to help it fit one page."""
+         proj_bullets: int, max_projects: int, skills_per_group: int = 0) -> dict[str, Any]:
+    """Return a trimmed copy of the resume data to help it fit one page.
+    skills_per_group keeps each group's first (most relevant) N entries."""
     d = dict(data)
     if drop_summary:
         d["summary"] = ""
+    skills = d.get("skills")
+    if skills_per_group and skills and isinstance(skills[0], dict):
+        d["skills"] = [{**g, "entries": ", ".join(_split_entries(g.get("entries", ""))[:skills_per_group])}
+                       for g in skills]
     if d.get("experience"):
         d["experience"] = [{**e, "bullets": (e.get("bullets") or [])[:exp_bullets]}
                            for e in d["experience"]]
@@ -309,10 +503,16 @@ def _cap(data: dict[str, Any], drop_summary: bool, exp_bullets: int,
 
 
 def _one_page_variants(data: dict[str, Any]):
-    """Progressively tighter versions: as-is, then drop summary, then fewer
-    bullets/projects. First one that compiles to a single page wins."""
+    """Progressively tighter versions: as-is, then fewer bullets/projects, and
+    only then without the summary. First one that compiles to one page wins."""
     yield data
-    yield _cap(data, True, 3, 3, 3)
+    # The summary is the most role-specific part of the resume, so trim bullets
+    # and projects first and drop the summary only as a later resort.
+    yield _cap(data, False, 3, 3, 3)
+    yield _cap(data, False, 3, 2, 3)
+    # Shorter skill lists before giving up the summary.
+    yield _cap(data, False, 3, 2, 3, skills_per_group=6)
+    yield _cap(data, False, 3, 2, 3, skills_per_group=MIN_PER_GROUP + 1)
     yield _cap(data, True, 3, 2, 3)
     yield _cap(data, True, 2, 2, 2)
 
@@ -331,7 +531,25 @@ def _compile_tex(tex_source: str, output_pdf_path: str) -> tuple[bool, int | Non
             return False, None
         Path(output_pdf_path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(pdf_file, output_pdf_path)
+        # Keep the exact source of this PDF beside it, for hand edits.
+        Path(output_pdf_path).with_suffix(".tex").write_text(tex_source, encoding="utf-8")
         return True, _pages_from_log(result.stdout)
+
+
+@dataclasses.dataclass
+class RenderResult:
+    """Outcome of a render. Truthy when a PDF was produced, so existing callers
+    can keep writing `if not render_resume(...)`. `data` is the content variant
+    ACTUALLY rendered (possibly trimmed to fit one page) -- score that, not the
+    pre-trim input, or the reported ATS will overstate what's in the PDF.
+    `one_page_ok` is False when fit_one_page was requested but couldn't be met."""
+    ok: bool
+    data: dict[str, Any] | None = None
+    pages: int | None = None
+    one_page_ok: bool = True
+
+    def __bool__(self) -> bool:
+        return self.ok
 
 
 def render_resume(
@@ -339,34 +557,38 @@ def render_resume(
     template_path: str,
     output_pdf_path: str,
     fit_one_page: bool = False,
-) -> bool:
+) -> RenderResult:
     """
     Renders resume_data through the template and compiles it with latexmk.
-    Returns True on success; only the final PDF is copied to output_pdf_path.
+    Returns a RenderResult (truthy on success); the final PDF is copied to
+    output_pdf_path and its LaTeX source to the same path with a .tex suffix.
 
     With fit_one_page=True, if the resume compiles to more than one page it is
     re-rendered with progressively less content (drop summary, then fewer
-    bullets/projects) until it fits -- a hard one-page guarantee.
+    bullets/projects). If even the most-trimmed variant is >1 page, the PDF is
+    still written but RenderResult.one_page_ok is False -- the caller is told the
+    constraint could not be met rather than being misled by a success return.
     """
     template = LATEX_JINJA_ENV.get_template(str(Path(template_path)))
-    variants = _one_page_variants(resume_data) if fit_one_page else iter([resume_data])
+    variants = list(_one_page_variants(resume_data) if fit_one_page else iter([resume_data]))
 
-    last_ok = False
-    variants = list(variants)
     for i, data in enumerate(variants):
         tex_source = template.render(resume=_escape_tree(data))
         ok, pages = _compile_tex(tex_source, output_pdf_path)
         if not ok:
-            return False
-        last_ok = True
+            return RenderResult(False)
         if pages is None or pages <= 1:
             logger.info("Rendered resume -> %s (%s page)", output_pdf_path, pages or "?")
-            return True
+            return RenderResult(True, data=data, pages=pages, one_page_ok=True)
         if i == len(variants) - 1:
-            logger.warning("Resume still %d pages after trimming -> %s", pages, output_pdf_path)
-            return True
+            if fit_one_page:
+                logger.warning(
+                    "Resume still %d pages after trimming -> %s (one-page constraint NOT met)",
+                    pages, output_pdf_path,
+                )
+            return RenderResult(True, data=data, pages=pages, one_page_ok=not fit_one_page)
         logger.info("Resume was %d pages; trimming to fit one page...", pages)
-    return last_ok
+    return RenderResult(False)
 
 
 def render_cover_letter(
@@ -418,4 +640,5 @@ def render_cover_letter(
             return False
         Path(output_pdf_path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(pdf_file, output_pdf_path)
+        Path(output_pdf_path).with_suffix(".tex").write_text(tex_source, encoding="utf-8")
     return True

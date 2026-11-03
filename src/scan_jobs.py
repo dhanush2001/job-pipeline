@@ -29,8 +29,10 @@ came from.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -64,7 +66,7 @@ ADZUNA_MAX_RETRIES = 3
 @dataclasses.dataclass
 class Job:
     id: str  # stable unique id, namespaced by source so ids never collide
-    source: str  # greenhouse | lever | ashby | smartrecruiters | workable | adzuna
+    source: str  # greenhouse | lever | ashby | smartrecruiters | workable | adzuna | apify
     company: str
     title: str
     location: str
@@ -286,6 +288,15 @@ def fetch_smartrecruiters_jobs(company_id: str, max_postings: int = 100) -> list
     return jobs
 
 
+_SECRET_PARAM_RE = re.compile(r"((?:app_key|app_id|api_key|token)=)[^&\s'\")]+", re.I)
+
+
+def _redact(exc: Exception) -> str:
+    """requests puts the full URL (query-string keys included) in its error
+    text -- strip credentials before it reaches a log."""
+    return _SECRET_PARAM_RE.sub(r"\1***", str(exc))
+
+
 def fetch_adzuna_jobs(
     keywords: str,
     location: str,
@@ -336,11 +347,11 @@ def fetch_adzuna_jobs(
                 if attempt < ADZUNA_MAX_RETRIES:
                     wait = 2 ** attempt  # 1s, 2s, 4s
                     logger.warning("Adzuna %s/%r page %s failed (%s) -- retry %d/%d in %ds",
-                                   country, keywords, page, exc, attempt + 1, ADZUNA_MAX_RETRIES, wait)
+                                   country, keywords, page, _redact(exc), attempt + 1, ADZUNA_MAX_RETRIES, wait)
                     time.sleep(wait)
                 else:
                     logger.warning("Adzuna %s/%r page %s gave up after %d retries: %s",
-                                   country, keywords, page, ADZUNA_MAX_RETRIES, exc)
+                                   country, keywords, page, ADZUNA_MAX_RETRIES, _redact(exc))
         if payload is None:
             break
 
@@ -366,6 +377,154 @@ def fetch_adzuna_jobs(
                 )
             )
     return jobs
+
+
+# ---- Apify ----------------------------------------------------------------------
+# Apify runs third-party "actors" (scrapers) -- e.g. a LinkedIn or Indeed jobs
+# scraper -- and returns their dataset. Actors name fields differently, so each
+# Job field is read from the first key that exists. Billed per result by Apify:
+# keep max_items modest. Token: APIFY_TOKEN (env / Actions secret).
+APIFY_TIMEOUT = 300  # run-sync's own cap
+_APIFY_FIELDS = {
+    "id": ("id", "jobId", "job_id", "postingId", "jobPostingId", "trackingId"),
+    "title": ("title", "jobTitle", "positionName", "position", "name"),
+    "company": ("companyName", "company", "company_name", "employer", "hiringOrganization"),
+    "location": ("location", "jobLocation", "place", "formattedLocation", "city"),
+    "url": ("url", "jobUrl", "link", "jobLink", "linkedinUrl"),
+    "apply_url": ("applyUrl", "externalApplyLink", "applyLink", "apply_url", "jobUrl", "url", "link"),
+    "description": ("descriptionText", "description", "jobDescription", "descriptionHtml", "text"),
+}
+
+
+def _first(item: dict, keys: tuple[str, ...]) -> str:
+    for k in keys:
+        v = item.get(k)
+        if isinstance(v, dict):  # e.g. {"name": "Acme"} / {"linkedinUrl": ...}
+            v = v.get("name") or v.get("display_name") or v.get("text") or ""
+        if isinstance(v, list):
+            v = ", ".join(str(x) for x in v if x)
+        if v not in (None, ""):
+            return str(v).strip()
+    return ""
+
+
+def apify_item_to_job(item: dict, actor: str) -> Job | None:
+    """One actor dataset row -> Job, or None when it lacks a title or link."""
+    title = _first(item, _APIFY_FIELDS["title"])
+    url = _first(item, _APIFY_FIELDS["url"])
+    if not title or not url:
+        return None
+    native = _first(item, _APIFY_FIELDS["id"]) or hashlib.sha1(url.encode()).hexdigest()[:12]
+    short = actor.split("/")[-1].split("~")[-1]
+    return Job(
+        id=f"apify:{short}:{native}",
+        source="apify",
+        company=_first(item, _APIFY_FIELDS["company"]),
+        title=title,
+        location=_first(item, _APIFY_FIELDS["location"]),
+        url=url,
+        apply_url=_first(item, _APIFY_FIELDS["apply_url"]) or url,
+        description=_first(item, _APIFY_FIELDS["description"]),
+    )
+
+
+def fetch_apify_jobs(actor: str, run_input: dict, token: str, max_items: int = 100,
+                     max_cost_usd: float | None = None) -> list[Job]:
+    """Run an Apify actor synchronously and map its dataset rows to Jobs.
+    maxItems / maxTotalChargeUsd make Apify stop the run (and the billing) at
+    that many results or dollars -- `limit` alone only trims what is returned."""
+    if not token:
+        logger.warning("Apify skipped: no APIFY_TOKEN configured")
+        return []
+    url = f"https://api.apify.com/v2/acts/{actor.replace('/', '~')}/run-sync-get-dataset-items"
+    params = {"timeout": APIFY_TIMEOUT, "limit": max_items, "maxItems": max_items, "clean": "true"}
+    if max_cost_usd:
+        params["maxTotalChargeUsd"] = max_cost_usd
+    try:
+        resp = requests.post(
+            url,
+            params=params,
+            json=run_input or {},
+            headers={**HEADERS, "Authorization": f"Bearer {token}"},
+            timeout=APIFY_TIMEOUT + 30,
+        )
+        if resp.status_code in (401, 403):
+            logger.error("Apify auth failed (%s) -- check APIFY_TOKEN.", resp.status_code)
+            return []
+        resp.raise_for_status()
+        items = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("Apify actor %s failed: %s", actor, exc)
+        return []
+    if not isinstance(items, list):
+        logger.warning("Apify actor %s returned no item list", actor)
+        return []
+    jobs = [j for j in (apify_item_to_job(i, actor) for i in items if isinstance(i, dict)) if j]
+    logger.info("Apify %s: %d jobs from %d items", actor, len(jobs), len(items))
+    return jobs
+
+
+# ---- cross-board duplicates --------------------------------------------------------
+# The same posting often shows up on its company's ATS board AND on aggregators
+# (Adzuna, an Apify LinkedIn scrape). Ids differ per source, so match on the
+# posting itself. Company boards are the source of truth (full description,
+# direct apply link); two aggregator copies keep the longer description.
+_AGGREGATORS = {"adzuna", "apify"}
+_ATS_ID = re.compile(
+    r"(?:greenhouse\.io/[^/?#]+/jobs/|gh_jid=|lever\.co/[^/?#]+/|ashbyhq\.com/[^/?#]+/"
+    r"|smartrecruiters\.com/[^/?#]+/|workable\.com/[^/?#]+/j/)([A-Za-z0-9-]{5,})",
+    re.I,
+)
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _posting_keys(job: Job) -> list[str]:
+    keys = []
+    company, title = _norm(job.company), _norm(job.title)
+    if company and title:
+        keys.append(f"ct:{company}|{title}|{_norm(job.location).split(' ')[0] if job.location else ''}")
+    for link in (job.apply_url, job.url):
+        m = _ATS_ID.search(link or "")
+        if m:
+            keys.append(f"ats:{m.group(1).lower()}")
+    if job.source not in _AGGREGATORS:
+        keys.append(f"ats:{job.id.split(':')[-1].lower()}")
+    return keys
+
+
+def dedupe_postings(jobs: list[Job]) -> list[Job]:
+    """Drop aggregator copies of a posting already present from another source.
+    Same-source jobs with different ids are separate requisitions and are kept,
+    even with identical titles."""
+    direct = [j for j in jobs if j.source not in _AGGREGATORS]
+    taken: dict[str, Job] = {}
+    for j in direct:
+        for k in _posting_keys(j):
+            taken.setdefault(k, j)
+    best: dict[int, Job] = {}
+    order: list[int] = []
+    agg_key: dict[str, int] = {}
+    for j in (j for j in jobs if j.source in _AGGREGATORS):
+        keys = _posting_keys(j)
+        if any(k in taken for k in keys):
+            continue
+        slot = next((agg_key[k] for k in keys if k in agg_key), None)
+        if slot is None:
+            slot = len(order)
+            order.append(slot)
+            best[slot] = j
+        elif len(j.description or "") > len(best[slot].description or ""):
+            best[slot] = j
+        for k in keys:
+            agg_key.setdefault(k, slot)
+    kept = direct + [best[i] for i in order]
+    if len(kept) < len(jobs):
+        logger.info("Cross-board duplicates: dropped %d copies of postings found on another source",
+                    len(jobs) - len(kept))
+    return kept
 
 
 def scan_all(config: dict) -> list[Job]:
@@ -417,6 +576,16 @@ def scan_all(config: dict) -> list[Job]:
                 ))
                 time.sleep(POLITE_DELAY_SECONDS)
 
+    apify_cfg = config.get("sources", {}).get("apify") or {}
+    if apify_cfg.get("actors"):
+        token = os.environ.get("APIFY_TOKEN", "")
+        for actor_cfg in apify_cfg["actors"]:
+            jobs.extend(fetch_apify_jobs(
+                actor_cfg["actor"], actor_cfg.get("input") or {}, token,
+                max_items=actor_cfg.get("max_items", apify_cfg.get("max_items", 100)),
+                max_cost_usd=actor_cfg.get("max_cost_usd", apify_cfg.get("max_cost_usd")),
+            ))
+
     seen: set[str] = set()
     deduped: list[Job] = []
     for job in jobs:
@@ -424,6 +593,8 @@ def scan_all(config: dict) -> list[Job]:
             continue
         seen.add(job.id)
         deduped.append(job)
+    # Same posting under different ids on different boards -> keep one.
+    deduped = dedupe_postings(deduped)
 
     logger.info("Scanned %d jobs across all sources (%d unique)", len(jobs), len(deduped))
     return deduped

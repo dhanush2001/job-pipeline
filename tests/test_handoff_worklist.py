@@ -34,6 +34,8 @@ def test_handoff_resolve_and_deliver():
         src_pdf = Path(tmp) / "r.pdf"; src_pdf.write_text("PDF")
         src_cover = Path(tmp) / "c.pdf"; src_cover.write_text("PDF")
         src_cover.with_suffix(".txt").write_text("cover text")
+        src_pdf.with_suffix(".tex").write_text("\\documentclass{article}")
+        src_cover.with_suffix(".tex").write_text("\\documentclass{article}")
         out = handoff.deliver("Acme_SWE", src_pdf, src_cover, dirs,
                               extra_texts={"missing_skills.md": "gaps"})
         job_dir = dirs[0] / "Acme_SWE"      # each job gets its own folder
@@ -41,6 +43,9 @@ def test_handoff_resolve_and_deliver():
         assert (job_dir / "cover_letter.pdf").exists()
         assert (job_dir / "cover_letter.txt").exists()
         assert (job_dir / "missing_skills.md").read_text() == "gaps"
+        # Editable LaTeX sources travel with the PDFs.
+        assert (job_dir / "resume.tex").read_text().startswith("\\documentclass")
+        assert (job_dir / "cover_letter.tex").exists()
         assert out == [job_dir / "resume.pdf"]
     print("test_handoff_resolve_and_deliver: PASS")
 
@@ -196,12 +201,26 @@ def test_new_template_generation():
     print("test_new_template_generation: PASS")
 
 
+def test_job_hash_disambiguates_same_company_title():
+    """Two different postings with identical company+title must get different
+    output paths, so one doesn't overwrite the other's resume/cover letter."""
+    a = handoff.job_hash("Build backend services in Go.")
+    b = handoff.job_hash("Build ML pipelines in Python.")
+    assert a != b, "different descriptions must hash differently"
+    assert len(a) == 8 and a.isalnum()
+    assert handoff.job_hash("Build backend services in Go.") == a, "hash must be stable"
+    # Empty/None is tolerated.
+    assert handoff.job_hash("") and handoff.job_hash(None)
+    print("test_job_hash_disambiguates_same_company_title: PASS")
+
+
 if __name__ == "__main__":
     test_handoff_resolve_and_deliver()
     test_worklist_writer_parser_roundtrip_and_gate()
     test_parse_worklist_handles_raw_paste()
     test_parse_pasted_jobs_simple_format()
     test_new_template_generation()
+    test_job_hash_disambiguates_same_company_title()
     test_worklist_end_to_end_dry_run()
     test_paste_flow_end_to_end_dry_run()
     print("\nAll handoff/worklist tests passed.")

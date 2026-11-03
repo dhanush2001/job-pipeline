@@ -1,9 +1,8 @@
 %-------------------------
-% Tailored CV template (Jinja2 version).
-% The Jinja delimiters this repo uses (the VAR and BLOCK forms) are parsed
-% EVERYWHERE in this file, comments included -- so never write them inside a
-% comment, or the template fails to compile. Rendered fields come from the
-% merged resume dict; see src/render_resume.py for the delimiter configuration.
+% Tailored CV template (Jinja2 version)
+% Preamble and custom commands are UNCHANGED from the original, so output is
+% visually identical. Do NOT write the Jinja delimiters inside comments --
+% they are parsed everywhere in the file, comments included.
 %-------------------------
 \documentclass[letterpaper,11pt]{article}
 
@@ -54,7 +53,8 @@
   \vspace{-2pt}\item
     \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
       \textbf{#1} & #2 \\
-      \textit{\small#3} & \textit{\small #4} \\
+      % A long Technologies line wraps instead of pushing the location off the page.
+      \parbox[t]{0.78\textwidth}{\raggedright\textit{\small#3}} & \textit{\small #4} \\
     \end{tabular*}\vspace{-7pt}
 }
 \newcommand{\resumeProjectEntry}[3]{

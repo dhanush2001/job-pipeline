@@ -154,3 +154,14 @@ if __name__ == "__main__":
     test_cover_letter_renders_pdf_and_text()
     test_empty_cover_letter_returns_false()
     print("\nAll cover-letter / referral tests passed.")
+
+
+def test_per_job_referral_text_has_note_and_dm():
+    from src.main import _referral_text
+    entry = {"company": "Acme", "title": "SWE", "url": "https://acme.example/jobs/1",
+             "note": "Hi there", "dm": "Would you refer me?", "note_len": 8}
+    text = _referral_text("Acme", [entry])
+    assert "LinkedIn referral drafts -- Acme" in text
+    assert "https://acme.example/jobs/1\n" in text
+    assert "(8/300 chars):\nHi there" in text
+    assert "Would you refer me?" in text

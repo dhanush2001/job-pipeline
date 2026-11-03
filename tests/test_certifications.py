@@ -78,3 +78,15 @@ if __name__ == "__main__":
     test_include_if_stripped_from_output()
     test_empty_and_missing_sections()
     print("\nAll certification tests passed.")
+
+
+def test_gated_experience_shows_only_on_matching_roles():
+    from src.render_resume import merge_tailored_content, scope_master
+    master = {"experience": [
+        {"id": "it", "title": "IT Student Assistant", "title_include_if": ["it support", "help desk"], "bullets": ["a"]},
+        {"id": "acme", "title": "Intern", "bullets": ["b"]}]}
+    assert [e["id"] for e in scope_master(master, "Software Engineer", "Build APIs; IT support tickets")["experience"]] == ["acme"]
+    scoped = scope_master(master, "IT Support Specialist", "")
+    assert [e["id"] for e in scoped["experience"]] == ["it", "acme"]
+    assert "title_include_if" not in scoped["experience"][0]  # gate keys never reach the model or template
+    assert [e["id"] for e in merge_tailored_content(master, None, job_title="Data Scientist")["experience"]] == ["acme"]

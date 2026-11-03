@@ -13,54 +13,454 @@ resume:
   master_data: "data/master_resume.yaml"
   template: "templates/resume.tex.j2"
   output_dir: "output/resumes"
-  include_summary: true    # add a tailored 2-line Summary section to the resume
-  force_one_page: true     # auto-trim + re-render if a resume exceeds one page
   # Optional menu of pre-written project bullets grouped by angle. DeepSeek may
   # pick and rephrase from it per role; its numbers count as a grounded source
   # so real metrics in it are not flagged as fabrication. Set "" to disable.
   bullet_bank: ""
+  # Summary section on tailored resumes: true always, false never, or leave it
+  # out to follow master_resume.yaml. Off: career offices advise new grads to
+  # spend the space on bullets. The summary still feeds the cover letter.
+  include_summary: false
+  # Hard one-page guarantee: if a resume compiles to >1 page, auto-trim (drop
+  # summary, then fewer bullets/projects) and re-render until it fits.
+  force_one_page: true
 
 sources:
   greenhouse:
-    - "examplecorp"
-  lever:
-    - "anotherexample"
-  # Additional ATS platforms -- list each company's board slug (the token in
-  # its careers URL). Ashby/Workable include descriptions inline; SmartRecruiters
-  # costs one extra request per posting.
-  ashby: []            # jobs.ashbyhq.com/<slug>
+    - "stripe"
+    - "databricks"
+    - "anthropic"
+    - "figma"
+    - "datadog"
+    - "scaleai"
+    - "airtable"
+    - "asana"
+    - "instacart"
+    - "robinhood"
+    - "affirm"
+    - "chime"
+    - "gusto"
+    - "vercel"
+    # Added for volume -- all verified live on the Greenhouse API and known to
+    # post new-grad / early-career SWE/ML/data roles.
+    - "coinbase"
+    - "reddit"
+    - "brex"
+    - "roblox"
+    - "pinterest"
+    - "airbnb"
+    - "coursera"
+    - "gitlab"
+    - "cloudflare"
+    - "twitch"
+    - "lyft"
+    - "sofi"
+    - "samsara"
+    - "verkada"
+    - "webflow"
+    - "discord"
+    - "flexport"
+    - "gemini"
+    - "faire"
+    # Batch 2 -- verified live on the Greenhouse API.
+    - "duolingo"
+    - "mongodb"
+    - "elastic"
+    - "toast"
+    - "checkr"
+    - "blend"
+    - "carta"
+    - "mixpanel"
+    - "lattice"
+    - "smartsheet"
+    - "netlify"
+    - "launchdarkly"
+    - "circleci"
+    - "nextdoor"
+    # Batch 3 -- verified live on the Greenhouse API.
+    - "dropbox"
+    - "squarespace"
+    - "roku"
+    - "twilio"
+    - "okta"
+    - "newrelic"
+    - "pagerduty"
+    - "fastly"
+    - "cockroachlabs"
+    - "fivetran"
+    - "wise"
+    - "upstart"
+    - "peloton"
+    # Batch 4 -- verified live on the Greenhouse API.
+    - "betterment"
+    - "braze"
+    - "udemy"
+    - "udacity"
+    - "datacamp"
+    - "labelbox"
+    - "billcom"
+    - "nuro"
+    - "waymo"
+    # AI research labs + AI-for-science/health -- verified live on the Greenhouse API.
+    - "togetherai"
+    - "xai"
+    - "isomorphiclabs"
+    - "recursionpharmaceuticals"
+    - "pathai"
+  lever:                 # api.lever.co/<slug> -- verified live on the Lever API
+    - "spotify"
+    - "palantir"
+  # Additional ATS platforms. Same idea as greenhouse: list each company's
+  # board slug (the token in its careers URL). Ashby/Workable return job
+  # descriptions inline; SmartRecruiters costs one extra request per posting.
+  ashby:               # jobs.ashbyhq.com/<slug> -- verified live on the Ashby API
+    - "ramp"
+    - "notion"
+    - "openai"
+    - "perplexity"
+    - "cohere"
+    - "linear"
+    - "vanta"
+    - "runway"
+    # Batch 3 -- verified live on the Ashby API.
+    - "elevenlabs"
+    - "suno"
+    - "harvey"
+    - "writer"
+    - "decagon"
+    - "sierra"
+    - "modal"
+    - "baseten"
+    - "character"
+    # Batch 4 -- verified live on the Ashby API.
+    - "replit"
+    - "browserbase"
+    - "abridge"
+    # AI research labs -- verified live on the Ashby API.
+    - "thinkingmachines"
+    - "physicalintelligence"
+    - "lumaai"
+    - "liquid-ai"
+    - "cartesia"
+    - "reka"
+    - "pika"
   smartrecruiters: []  # jobs.smartrecruiters.com/<Company>
-  workable: []         # apply.workable.com/<slug>
+  workable: []
+
+  # General-board AGGREGATOR -- the widest net, the closest thing to "all jobs
+  # posted per day". Unlike the per-company boards above, this searches ACROSS
+  # job sites by keyword. Each entry under `queries` is a separate search.
+  # REQUIRES free API keys: get them at https://developer.adzuna.com/ and set
+  # ADZUNA_APP_ID / ADZUNA_APP_KEY (env vars or .env). Skipped silently without.
   adzuna:
-    # General-board aggregator (needs free ADZUNA_APP_ID/APP_KEY). Runs every
-    # query against every country code -> cost per scan = countries x queries x
-    # max_pages calls (free tier ~250/day). A single `keywords` string + single
-    # `country` also still works.
-    countries: ["us", "ca", "gb", "de", "nl", "au"]
-    location: ""
-    max_pages: 2
+    # Runs every query against every country below (the same free keys work for
+    # all Adzuna countries). Cost per scan = countries x queries x max_pages API
+    # calls (6 x 10 x 2 = 120). Adzuna's free tier is ~250 calls/day, so this
+    # leaves room for ~2 scans/day -- raise max_pages only if you have headroom.
+    # Adzuna-supported targets only. Hong Kong, Taiwan, Ireland and the Nordics
+    # have NO Adzuna endpoint -- those come from the company boards above.
+    countries: ["us", "ca", "gb", "de", "nl", "au", "sg", "fr", "it", "es", "pl", "at", "be", "ch"]
+    location: ""          # "" = whole country; or a metro, e.g. "New York"
+    max_pages: 1          # 14 countries x 15 queries x 1 page = 210 calls/scan (free tier ~250/day)
     queries:
       - "software engineer new grad"
-      - "data analyst"
+      - "software engineer entry level"
+      - "junior software engineer"
+      - "new grad software developer"
       - "machine learning engineer"
+      - "data analyst"
+      - "data engineer"
+      - "data scientist"
+      - "backend engineer"
+      - "full stack engineer"
+      - "machine learning research engineer"
+      - "AI research scientist"
+      - "research assistant machine learning"
+      - "IT support"
+      - "help desk technician"
+              # apply.workable.com/<slug>
+  apify:
+    # Apify actors (hosted scrapers, e.g. a LinkedIn or Indeed jobs scraper).
+    # Token: APIFY_TOKEN in .env and as a GitHub Actions secret. Apify bills
+    # per result, so keep max_items modest. Each actor's `input` is passed as-is
+    # -- copy it from the actor's Input tab on apify.com. Field names in the
+    # results are mapped automatically (title/jobTitle, companyName/company...).
+    # A posting that also appears on a company board or Adzuna is kept once
+    # (the company-board copy wins).
+    max_items: 100
+    # Hard spending cap per run, enforced by Apify (100 jobs ~ $0.15).
+    max_cost_usd: 0.25
+    actors:
+      # LinkedIn, ~$0.0015/job (pay per result): 7 titles x 14 = ~98 jobs/day
+      # = ~$0.15/day. Option codes from the actor's input schema:
+      #   experienceLevels: 1 Internship, 2 Entry level, 3 Associate, 4 Mid-Senior
+      #   publishedAt: r86400 = past 24 hours
+      # rows: 0 means "every page" and Apify bills each job scraped -- never 0.
+      # companyProfile off: unused here and slows the run past the 5-min wait.
+      - actor: "bebity/linkedin-jobs-scraper"
+        max_items: 100
+        input:
+          titles: ["software engineer new grad", "machine learning engineer",
+                   "data scientist", "backend engineer",
+                   "AI research engineer", "machine learning research scientist", "IT support"]
+          locations: ["United States"]
+          experienceLevels: ["1", "2"]
+          publishedAt: "r86400"
+          rows: 14
+          companyProfile: false
+          enrichCompany: false
 
 matching:
-  must_have_keywords: ["python", "software engineer"]
-  nice_to_have_keywords: ["machine learning", "new grad", "entry level", "aws", "react"]
-  # exclude_keywords match the TITLE only (drop "Senior Engineer", not every job
-  # whose description says "senior"). Put experience/eligibility bars that live
-  # in the body under exclude_description_keywords instead.
-  exclude_keywords: ["senior", "staff", "principal", "director", "manager"]
-  exclude_description_keywords: ["5+ years", "8+ years", "10+ years", "security clearance"]
-  min_score: 0.1
-  # ATS-based selection: re-rank the filtered jobs by how well your skills match
-  # each posting, then optionally drop weak matches.
-  min_jd_skills: 6   # ignore postings naming fewer than N skills (avoids trivial 100% matches)
-  min_ats: 75        # only apply to postings you match >= this % (0 = keep all, just re-sort)
-  prefer_engineering_roles: true  # rank SWE/ML/data roles first, drop business/customer roles
-  # Keep only roles located in these countries (dropped before any LLM call).
-  # "Remote" postings with no country are always kept. [] = keep every country.
-  target_countries: ["United States", "Canada", "United Kingdom", "Germany", "Netherlands", "Australia"]
+  # A job must contain at least ONE of these (title or description) -- the role
+  # families you're open to: SWE/CS, data (analyst/engineer/science), IT support.
+  must_have_keywords:
+    - "engineer"
+    - "developer"
+    - "analyst"
+    - "scientist"
+    - "data"
+    - "software"
+    - "programmer"
+    - "intern"
+    - "support"
+    - "technician"
+  # Boost ranking toward your profile + level. With min_score below, a job needs
+  # at least one of these to qualify -- which also screens out non-tech roles
+  # that slipped past must_have (a recruiter req that merely says "data-driven").
+  nice_to_have_keywords:
+    # level
+    - "new grad"
+    - "new graduate"
+    - "entry level"
+    - "early career"
+    - "university graduate"
+    - "recent graduate"
+    - "intern"
+    - "fresher"
+    - "graduate"
+    - "alumni"
+    - "recent"
+    - "new"
+    - "internship"
+    # AI / ML
+    - "machine learning"
+    - "deep learning"
+    - "artificial intelligence"
+    - "ai"
+    - "ml"
+    - "llm"
+    - "nlp"
+    - "pytorch"
+    - "tensorflow"
+    - "cuda"
+    - "computer vision"
+    - "data analyst"
+    - "data engineer"
+    - "data scientist"
+    # ML systems / inference / serving 
+    - "inference"
+    - "model serving"
+    - "serving"
+    - "mlops"
+    - "ml platform"
+    - "ml infrastructure"
+    - "ml systems"
+    - "applied scientist"
+    - "applied science"
+    - "gpu"
+    - "quantization"
+    - "fine-tuning"
+    - "fine tuning"
+    - "lora"
+    - "transformers"
+    - "hugging face"
+    - "vllm"
+    - "triton"
+    - "tensorrt"
+    - "onnx"
+    - "latency"
+    - "throughput"
+    # languages / stacks
+    - "python"
+    - "sql"
+    - "java"
+    - "javascript"
+    - "typescript"
+    - "react"
+    - "android"
+    - "ios"
+    - "c++"
+    - "golang"
+    - "rust"
+    # systems / infra
+    - "kubernetes"
+    - "cloud"
+    - "distributed systems"
+    - "quantum"
+    - "backend"
+    - "frontend"
+    - "full stack"
+    - "computer science"
+    # research
+    - "research engineer"
+    - "research scientist"
+    - "researcher"
+    - "publication"
+    - "multimodal"
+    - "reinforcement learning"
+    - "evaluation"
+    - "benchmark"
+    - "robotics"
+    - "medical imaging"
+    - "computational biology"
+    - "bioinformatics"
+  # Matched against the TITLE only -- drops clearly-senior roles (NOT jobs whose
+  # description merely mentions these words).
+  # Matched against the TITLE only, as whole words (so "sr" won't hit "SRE").
+  exclude_keywords:
+    - "senior"
+    - "sr"          # abbreviation for senior (e.g. "Sr. Software Engineer")
+    - "snr"         # another senior abbreviation
+    - "staff"
+    - "principal"
+    - "director"
+    - "manager"
+    - "lead"
+    - "leader"      # "Research Leader", "Team Leader" (word match: "lead" misses it)
+    - "architect"
+    - "vp"
+    - "vice president"
+    - "head of"
+    - "sales"
+    - "solutions"
+    - "account executive"
+  # Matched against the DESCRIPTION -- experience/eligibility bars beyond your
+  # ~1 year. (2-4 year asks are kept; you can still apply to those.)
+  exclude_description_keywords:
+    - "5+ years"
+    - "6+ years"
+    - "7+ years"
+    - "8+ years"
+    - "10+ years"
+    - "security clearance"
+    # HARD work-authorization bars only: roles limited to US citizens / green-card
+    # holders / "US persons" (ITAR/export-control) / cleared staff -- which an
+    # F-1/OPT candidate genuinely cannot pass. Dropped at SCAN time, before any
+    # LLM call, so no tokens are spent on them.
+    #   NOTE: plain "no visa sponsorship" roles are deliberately NOT filtered --
+    #   you can work those on OPT/CPT and handle sponsorship later. Only
+    #   citizen/GC/clearance wordings are listed, and they dodge EEO boilerplate
+    #   ("citizenship status"). If a good role is wrongly skipped, trim this list.
+    - "u.s. citizen"                 # restrictive; EEO text says "citizenship status", not this
+    - "us citizen"
+    - "united states citizen"
+    - "citizenship is required"
+    - "citizen or permanent resident"
+    - "citizen or green card"
+    - "green card holder"
+    - "u.s. person"                  # ITAR/export-control "US person" requirement
+    - "export control"
+    - "ts/sci"                       # Top Secret clearance (defense/intel roles)
+    - "top secret"
+    - "active clearance"
+    - "polygraph"
+  # Just one nice-to-have hit qualifies (1/40 = 0.025). This keeps it broad --
+  # any CS-related role with a single relevant term is in -- while still
+  # screening non-tech roles that lack every one of these. Set 0.0 for absolute
+  # max breadth (every non-senior role that passed must_have).
+  min_score: 0.02
+  # ATS-based selection: after the keyword filter, jobs are re-ranked by how
+  # well YOUR skills (master resume + bullet bank) match the posting, so the
+  # ones generated first score highest. Then:
+  #   min_jd_skills  drop postings naming fewer than this many skills (avoids
+  #                  non-tech roles that trivially hit 100%).
+  #   min_ats        only apply to postings you match >= this % (0 = keep all).
+  min_jd_skills: 6
+  min_ats: 60
+  # IT support / help desk titles only: their postings list admin tools (Okta,
+  # Jamf, Google Workspace, MDM) learned on the job, so a real entry-level fit
+  # scores lower. Each folder's missing_skills.md lists those gaps.
+  min_ats_it_support: 35
+  # Rank genuine SWE/ML/data engineering roles first and drop business /
+  # customer-facing roles (consultant, planner, specialist, sales, field/
+  # solutions engineer) that pure keyword-matching would otherwise surface.
+  prefer_engineering_roles: true
+  # Drop PhD-ONLY roles (title says "PhD" with no MS/BS alternative) -- you're an
+  # MS candidate, so a PhD-required role is a hard miss. "MS/PhD", "BS/MS/PhD"
+  # and "PhD preferred" roles are KEPT (you're eligible for those).
+  exclude_phd_only_titles: true
+  # Also drop postings whose DESCRIPTION makes a PhD a hard requirement ("PhD in
+  # CS required") with no MS/BS or "equivalent experience" alternative --
+  # common on research-scientist roles. "PhD preferred" / "MS or PhD" are kept.
+  exclude_phd_required: true
+  # Same for UNDERGRAD-only roles ("Campus Undergraduate Full-Time Engineer") --
+  # those are for students finishing a bachelor's. "BS/MS" and "Undergraduate or
+  # Graduate" titles are KEPT.
+  exclude_undergrad_only_titles: true
+  # Drop roles whose stated graduation window excludes you (e.g. an internship
+  # for students "graduating fall 2027 or spring 2028" when you graduate Dec
+  # 2026). A high keyword score doesn't make you eligible. Only explicit
+  # graduation-date language triggers it ("graduating", "graduation", "class
+  # of") -- a "2027 New Grad" START date does NOT. Leave graduation_year blank to
+  # read it from your master resume's "Expected ..." education date.
+  exclude_graduation_mismatch: true
+  graduation_year:          # e.g. 2026; blank turns the graduation-window check off
+  # Internships are for current students: drop ones whose term year in the
+  # title is after you graduate ("2027 Summer Intern" for a Dec-2026 grad) or
+  # that require returning to school afterwards. 2026 internships stay.
+  exclude_post_graduation_internships: true
+  # Drop roles whose REQUIRED experience exceeds this many years. Parses "3+
+  # years", "three (3) years", "3-5 years", "at least 3 years of experience";
+  # ignores "preferred / a plus / bonus" lines and takes the lowest alternative
+  # ("3 years, or 1 with a Master's" -> 1). Your professional experience is one
+  # internship, so 1 keeps new-grad, "0-2" and "1-3 years" roles and drops any
+  # role whose minimum is 2+ years. Raise to 2 or 3 to also try stretch roles.
+  max_required_experience_years: 1
+  # Cap how many roles from any ONE company make the cut, so a company that
+  # posts 30 near-identical reqs can't eat your whole run. 0 = no cap.
+  max_per_company: 5
+  # Only keep roles located in these countries (visa-friendly markets you're
+  # pursuing). A role in a country NOT listed is dropped at scan time, before
+  # any LLM call -- so no tokens are spent on, say, a Tokyo or Paris posting.
+  # "Remote" postings with no country are always kept. Set [] to keep every
+  # country. Names must match locations.py (the folder names too).
+  target_countries:
+    - "United States"
+    - "Canada"
+    - "United Kingdom"
+    - "Australia"
+    # Asia (visa-friendly tech hubs)
+    - "Singapore"
+    - "Hong Kong"
+    - "Taiwan"
+    # Europe
+    - "Germany"
+    - "Netherlands"
+    - "France"
+    - "Ireland"
+    - "Switzerland"
+    - "Sweden"
+    - "Denmark"
+    - "Norway"
+    - "Finland"
+    - "Portugal"
+    - "Spain"
+    - "Italy"
+    - "Poland"
+    - "Belgium"
+    - "Austria"
+  # Fill order when capping to max_jobs_per_run: take the best US roles first,
+  # then -- only if that doesn't fill the cap -- the next countries in this
+  # order, then every other target country by match quality. So you get up to
+  # 100 US jobs; if the US has fewer, the remainder comes from Ireland, then
+  # Singapore, then Canada, then the rest. "Remote" (no country in the posting)
+  # is ranked right after the US, since most remote tech roles are US-based.
+  country_priority:
+    - "United States"
+    - "Remote"
+    - "Ireland"
+    - "Singapore"
+    - "Canada"
 
 github:
   # Your GitHub username. Repos are pulled once per run and fed to the
@@ -75,12 +475,18 @@ github:
   # Unauthenticated = 60 req/hour PER IP and WILL fail on shared CI runners.
 
 quality:
-  # Bundles model + reasoning. Anything set explicitly under `deepseek:`
-  # below overrides the profile.
-  #   fast     -> V4 Flash, no thinking. ~$2.50/mo at 100/day.
-  #   balanced -> V4 Flash + low thinking. Good default.
-  #   high     -> V4 Pro + high thinking. Best output; ~10x fast, still small.
-  profile: "high"
+  # Bundles model + reasoning for BOTH passes (resume editing and the judge).
+  # Anything set explicitly under `deepseek:` below overrides the profile.
+  #   fast       -> V4 Flash, no thinking.        ~$0.40 / 100 jobs, ~5s per call
+  #   balanced   -> V4 Flash + low thinking.
+  #   flash-high -> V4 Flash + high thinking.     ~$1.70 / 100 jobs, ~30-60s per call
+  #   high       -> V4 Pro + high thinking.       slower (~90s per call) and pricier
+  # On "flash-high": tested on the same 8 real postings against fast, Pro-high,
+  # and Claude Haiku/Sonnet/Opus. Flash-high had the best ATS (83.5%), the fewest
+  # dropped keywords, zero rule breaks for the guards to fix (fast: 0.5/resume),
+  # and the most role-relevant project picks -- matching Claude Opus 5.5 quality
+  # at about a tenth of the cost. A 100-job run takes ~20 min at concurrency 6.
+  profile: "flash-high"
   grounding_report: "output/grounding_review.md"
 
 deepseek:
@@ -89,24 +495,74 @@ deepseek:
   reasoning: ""
   concurrency: 6      # parallel API calls; raise cautiously if you see 429s
 
+  # Reliability. Calls are STREAMED, so a long generation keeps bytes flowing and
+  # only a real stall trips stall_timeout. call_deadline is a hard wall-clock cap
+  # per call (retries included); run_deadline_minutes stops starting new jobs
+  # after that long -- unfinished jobs stay unseen and retry next run. Every
+  # outcome lands in output/ai_diagnostics.md. Check key/balance/latency first
+  # with:  python -m src.llm_client --probe
+  connect_timeout: 10      # seconds to connect
+  stall_timeout: 60        # seconds with NO data before a call is "stalled"
+  queue_timeout: 90        # DeepSeek can hold a request with keep-alives only; give up
+                           # if no real output starts within this ("queued")
+  breaker_threshold: 3     # this many "queued" calls in a row -> stop launching jobs
+  call_deadline: 300       # hard cap per call, all retries included
+  max_retries: 2           # retries on 429 / 5xx / network / stall (never on 401/402/400)
+  run_deadline_minutes: 45 # stop launching new jobs after this; blank = no limit
+
   # NOTE: thinking mode ignores temperature -- it only applies when
   # reasoning resolves to "disabled" (the `fast` profile).
   temperature: 0.4
   # max_tokens: 16000  # profile sets this; raise if JSON comes back truncated
 
-  # Local on-disk cache of API responses, keyed by the exact request. When ON,
-  # re-running reuses saved responses instead of paying again -- handy while
-  # iterating on the template/rendering. OFF for a genuine fresh run. Delete
-  # the dir to clear it. Separate from DeepSeek's server-side prompt caching.
+  # Local on-disk cache of API responses, keyed by the exact request (model,
+  # settings, resume, repos, bullet bank, job description). When ON, re-running
+  # reuses saved responses instead of paying for them again -- handy while you
+  # iterate on the template or rendering. Turn OFF for a genuine fresh run.
+  # Delete the dir to clear it. Separate from DeepSeek's server-side prompt
+  # caching (that trims one run's bill; this skips the call on the NEXT run).
   cache:
     enabled: false
     dir: ".cache/deepseek"
 
-judge:
-  # Second LLM pass: recruiter/hiring-manager review that rewrites experience
-  # bullets in Google XYZ form and weaves in missing keywords. Doubles per-job
-  # API cost. Writes output/judge_review.md. Set false to skip.
+  # Rates ($ per 1M tokens) used ONLY to turn exact token counts into an
+  # estimated dollar cost (output/token_usage.txt). Token counts are always
+  # exact (from the API). These defaults are ESTIMATES -- replace with your real
+  # rates from platform.deepseek.com (they vary by model and peak/off-peak) to
+  # make the cost figure exact. cache_hit = input tokens served from DeepSeek's
+  # prompt cache (much cheaper); cache_miss = fresh input tokens.
+  # deepseek-flash (V4.1-Flash-1017) PEAK rates, so the estimate errs high;
+  # off-peak is half. deepseek-v4-pro peak: 0.044 / 1.32 / 3.96.
+  pricing:
+    cache_hit_input_per_1m: 0.006
+    cache_miss_input_per_1m: 0.30
+    output_per_1m: 1.20
+
+
+project_selection:
+  # Which projects each resume shows is decided by a SEPARATE call with reasoning
+  # on (tested: flash + high reasoning picks better than flash without it,
+  # and better than v4-pro). Tailoring then writes bullets for exactly those
+  # projects. Adds one ~20-40s call per job. Set enabled: false to let the
+  # tailoring call choose as before.
+  # OFF while quality.profile is "flash-high": the tailoring call already
+  # reasons at high effort when it picks projects, so a separate picker would
+  # only add a call. Turn it on if you switch back to the "fast" profile.
   enabled: false
+  model: "deepseek-flash"
+  reasoning: "high"
+  count: 3
+
+judge:
+  # Second LLM pass: a senior recruiter / hiring manager reviews each resume,
+  # flags red flags + missing keywords, then rewrites the experience bullets in
+  # Google XYZ form (accomplished X, measured by Y, by doing Z), weaving in the
+  # keywords. Doubles the per-job API cost (still cheap on `fast`). See
+  # output/judge_review.md for what it caught. Set false to skip.
+  enabled: true
+  # Model for this pass; blank = the tailoring model (deepseek.model). A claude-*
+  # name needs ANTHROPIC_API_KEY (see the anthropic block below).
+  model:
 
 cover_letter:
   enabled: true
@@ -119,24 +575,96 @@ referrals:
   # One plain-text (.txt) file per company is written into this directory.
   output_dir: "output/referrals"
 
+application_questions:
+  # Read each Greenhouse/Ashby posting's application form and save a ready-to-
+  # paste answer sheet (application_questions.md) next to its resume. Written
+  # questions ("What engineering work excites you?") are drafted from your
+  # resume evidence; facts about you come ONLY from application_profile below;
+  # legal/EEO questions are always left to you. One extra AI call per job.
+  enabled: true
+  output_dir: "output/application_questions"
+
+# Your standing answers to factual form questions. `match` is a regex tried
+# against each question; the first match wins. A blank answer leaves the
+# question flagged for you -- the AI never guesses these.
+application_profile:
+  - match: "authori[sz]ed to work|legally (authori[sz]ed|eligible)|work authori[sz]ation"
+    answer: ""
+  - match: "sponsorship|visa"
+    answer: ""
+  - match: "18\\+? ?years|at least 18|age of 18"
+    answer: ""
+  - match: "start (a new role|date|working)|when can you start|earliest start|available to start"
+    answer: ""
+  - match: "relocat"
+    answer: ""
+  - match: "in[- ]office|hybrid|days per week|days a week|on-?site"
+    answer: ""
+  - match: "office locations? of interest|preferred (office|location)"
+    answer: ""
+  # Asked as free text ("Where are you currently located?") -- kept narrow so a
+  # yes/no like "are you currently located in or willing to relocate to ..." falls
+  # through to the in-office / relocation entries above.
+  - match: "^where are you (currently )?(located|based)|^current location"
+    answer: "Anytown, USA"
+  - match: "(ever|previously) (worked|been employed)|former employee"
+    answer: ""
+  - match: "language you prefer to interview|interview in"
+    answer: ""
+  - match: "how did you hear|where did you (hear|find)|referred"
+    answer: ""
+  - match: "salary|compensation|pay expectation"
+    answer: ""
+
 limits:
-  # How many application packages to generate per run.
+  # How many tailored application packages to GENERATE per run.
+  # Generating is cheap and carries no platform risk -- this can be 100.
   max_jobs_per_run: 100
 
 output:
-  # Copy-paste index of every generated job (score, company, role, apply link,
-  # resume PDF, cover-letter .txt). Your "here are the links" page.
+  # Copy-paste index of every generated job: score, company, role, apply link,
+  # and which resume PDF / cover-letter .txt to use. Your "here are the links" page.
   apply_index: "output/apply_index.md"
-  ats_report: "output/ats_report.md"   # per-job ATS keyword-match + missing keywords
-  judge_review: "output/judge_review.md"  # what the judge agent flagged + fixed
-  # Fill-in worklist for jobs with no fetchable description. Paste each between
-  # the marker lines, then: python -m src.tailor_worklist <this file>
+  # Per-job ATS keyword-match report (score + missing keywords).
+  ats_report: "output/ats_report.md"
+  # What the judge agent flagged + fixed per resume.
+  judge_review: "output/judge_review.md"
+  # Fill-in worklist for jobs whose description couldn't be fetched. Paste each
+  # description between the marker lines, then: python -m src.tailor_worklist <this file>
   needs_description: "output/needs_description.txt"
+  # Token usage + estimated cost: a human-readable per-session + running-total
+  # report, plus a JSONL history with one line per run (for per-session tracking).
+  token_usage: "output/token_usage.txt"
+  usage_log: "data/usage_log.jsonl"
   # Finished PDFs are copied into a job-applications/ subfolder of each of these
   # (only ones that exist), for manual upload. Set to [] to disable copying.
   handoff_dirs:
-    - "~/Downloads"
     - "~/Desktop"
 
 apply_queue_path: "data/apply_queue.json"
 seen_log_path: "data/seen_jobs.json"
+
+anthropic:
+  # Used when deepseek.model or judge.model names a claude-* model (or with
+  # `python -m src.tailor_one --model claude-sonnet-5-5`). Needs ANTHROPIC_API_KEY
+  # in .env locally / as a GitHub Actions secret. Thinking is always on for these
+  # models; effort comes from quality.profile (low / high / max) unless set here.
+  effort:
+  # $ per 1M tokens, Anthropic list prices (Nov 2026) -- estimates for
+  # output/token_usage.txt. Cache writes cost 1.25x input; reads 0.1x.
+  pricing:
+    claude-sonnet-5-5:
+      cache_hit_input_per_1m: 0.20
+      cache_miss_input_per_1m: 2.00
+      cache_write_input_per_1m: 2.50
+      output_per_1m: 10.00
+    claude-opus-5-5:
+      cache_hit_input_per_1m: 0.20
+      cache_miss_input_per_1m: 4.00
+      cache_write_input_per_1m: 5.00
+      output_per_1m: 20.00
+    claude-haiku-5-5:
+      cache_hit_input_per_1m: 0.01
+      cache_miss_input_per_1m: 0.10
+      cache_write_input_per_1m: 0.125
+      output_per_1m: 0.50

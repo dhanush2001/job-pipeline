@@ -107,7 +107,7 @@ def test_tailored_projects_reach_the_pdf():
         "Master projects should have been replaced by tailored ones"
 
     out = Path(__file__).parent.parent / "output" / "resumes" / "_projects_test.pdf"
-    assert render_resume(merged, "templates/resume.tex.j2", str(out)), "Render failed"
+    assert render_resume(merged, "templates/resume_template.tex.j2", str(out)), "Render failed"
 
     # Confirm the tailored project text is actually in the compiled PDF.
     import subprocess
@@ -130,7 +130,7 @@ def test_tailored_projects_keep_source_metadata():
     master = {
         "projects": [
             {
-                "name": "LLaVA-Med: Medical Data Platform",
+                "name": "MedVQA: Medical Data Platform",
                 "dates": "March 2026 -- Present",
                 "technologies": "Python, FastAPI, PyTorch",
                 "bullets": ["original bullet"],
@@ -146,7 +146,7 @@ def test_tailored_projects_keep_source_metadata():
         experience_bullets={},
         projects=[
             # Name is trimmed vs the master -- fuzzy match must still find it.
-            {"name": "LLaVA-Med", "bullets": ["tailored bullet"]},
+            {"name": "MedVQA", "bullets": ["tailored bullet"]},
             {"name": "repo-radar", "bullets": ["tailored repo bullet"]},
         ],
     )
@@ -154,13 +154,14 @@ def test_tailored_projects_keep_source_metadata():
     merged = merge_tailored_content(master, tailored, github_repos)
     by_name = {p["name"]: p for p in merged["projects"]}
 
-    llava = by_name["LLaVA-Med"]
-    assert llava["dates"] == "March 2026 -- Present", "Master project dates lost"
-    assert llava["technologies"] == "Python, FastAPI, PyTorch", "Master tech stack lost"
-    assert llava["bullets"] == ["tailored bullet"], "Tailored bullets must survive"
+    medvqa = by_name["MedVQA"]
+    assert medvqa["dates"] == "March 2026 -- Present", "Master project dates lost"
+    assert medvqa["technologies"] == "Python, FastAPI, PyTorch", "Master tech stack lost"
+    assert medvqa["bullets"] == ["tailored bullet"], "Tailored bullets must survive"
 
     radar = by_name["repo-radar"]
-    assert radar["dates"] == "2026-08-01", "Repo last-pushed date not carried over"
+    # A repo's last-push date is not when the work happened -- left off on purpose.
+    assert not radar.get("dates"), "GitHub-only projects must not show the last-push date"
     assert radar["technologies"] == "Go", "Repo language not carried over as tech stack"
 
     print("test_tailored_projects_keep_source_metadata: PASS")
@@ -212,6 +213,9 @@ def test_summary_not_injected_when_master_empty():
     # include_summary=True forces it on even when master is empty
     merged3 = merge_tailored_content({"summary": ""}, tailored, include_summary=True)
     assert merged3["summary"] == "A generated summary."
+    # include_summary=False drops it even when the master has one
+    assert merge_tailored_content({"summary": "old"}, tailored, include_summary=False)["summary"] == ""
+    assert merge_tailored_content({"summary": "old"}, None, include_summary=False)["summary"] == ""
     print("test_summary_not_injected_when_master_empty: PASS")
 
 
@@ -222,14 +226,18 @@ def test_one_page_fitter_helpers():
     assert _pages_from_log("no page info") is None
 
     data = {"summary": "s",
+            "skills": [{"category": "Languages", "entries": "A, B, C, D, E, F, G, H"}],
             "experience": [{"bullets": ["a", "b", "c", "d"]}],
             "projects": [{"bullets": ["w", "x", "y", "z"]}, {"bullets": ["1"]},
                          {"bullets": ["2"]}, {"bullets": ["3"]}]}
     v = list(_one_page_variants(data))
     assert v[0] is data                                   # first is untouched
-    assert v[1]["summary"] == ""                          # summary dropped next
-    assert len(v[3]["projects"]) == 2                     # projects capped
-    assert all(len(p["bullets"]) <= 2 for p in v[3]["projects"])  # bullets capped
+    # Bullets, projects, then skills are trimmed while the summary is kept...
+    assert all(x["summary"] == "s" for x in v[1:5])
+    assert len(v[1]["projects"]) == 3                     # projects capped
+    assert all(len(p["bullets"]) <= 2 for p in v[2]["projects"])  # bullets capped
+    assert v[4]["skills"][0]["entries"] == "A, B, C, D"   # shorter skill lists
+    assert v[5]["summary"] == ""                          # ...the summary goes last
     assert data["summary"] == "s"                         # original not mutated
     print("test_one_page_fitter_helpers: PASS")
 

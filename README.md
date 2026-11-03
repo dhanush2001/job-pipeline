@@ -115,6 +115,39 @@ evidence — it never introduces a skill or a metric you don't have. See
 `output/judge_review.md` for what it caught. It doubles per-job API cost (still
 cheap on `fast`).
 
+Set `judge.model` to give this pass its own model (blank = the tailoring model).
+
+## Claim check
+
+Grounding catches invented numbers and names, but a rewrite can change what
+you did without either: "a dashboard staff used daily" becomes "a self-serve
+interface", "investigated issues" becomes "resolved issues". So every tailored
+bullet is also checked for scope and impact words (led, owned, self-serve,
+reduced, resolved, consolidated, scaled, end-to-end, customers, ...) that its
+**own** entry's sources never use -- the master entry, its bullet-bank section,
+and its GitHub repo. An "Improved" in one project doesn't vouch for an
+"improved" at your internship. Findings appear under "New scope or impact
+claims" in `output/grounding_review.md` and as NEW CLAIMS in
+`python -m src.evaluate`. It flags for review; it never rewrites.
+
+## Using Claude instead of DeepSeek
+
+Any `claude-*` model name goes to Anthropic's Messages API (official SDK,
+`ANTHROPIC_API_KEY`); everything else stays on DeepSeek. Thinking is always on
+for these models -- the quality profile sets the effort level -- and the shared
+resume prefix is prompt-cached across jobs. Try one posting first:
+
+```
+python -m src.tailor_one --company Acme --title "Software Engineer" \
+    --desc-file posting.txt --model claude-opus-5-5
+```
+
+`--model` overrides tailoring and the judge for that run. To switch the scan,
+set `deepseek.model` (and optionally `judge.model`) to a Claude model. Costs
+land in `output/token_usage.txt`, priced per model from `anthropic.pricing`.
+A practical split: DeepSeek Flash for the nightly batch, a Claude model for the
+few postings you actually submit.
+
 ## Cover letters
 
 One DeepSeek call produces the tailored resume, cover letter, and referral
@@ -252,9 +285,9 @@ link, and upload the files from the per-job Desktop folder yourself.
 - **Some postings can't be fetched** (Workday's per-tenant markup, Adzuna links
   that land on arbitrary sites). Those show up in `output/needs_description.txt`
   — paste the description and run `python -m src.tailor_worklist`.
-- **Spot-check the LLM.** DeepSeek is instructed never to invent experience, and
-  grounding checks it mechanically, but read a few tailored resumes before
-  running unattended for a week.
+- **Spot-check the LLM.** The model is instructed never to invent experience, and
+  grounding plus the claim check verify it mechanically, but read every resume
+  you submit -- neither check understands meaning the way a reader does.
 
 ## Tests
 

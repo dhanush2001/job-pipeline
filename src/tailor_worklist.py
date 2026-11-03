@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-from src import handoff, usage
+from src import handoff, llm_client, usage
 from src.ats_score import missing_skills_md
 from src.tailor_one import _PROFILES, make_one, prepare
 from src.tailor_resume import extract_company_title
@@ -114,6 +114,8 @@ def run(args) -> int:
 
     config = yaml.safe_load(Path(args.config).read_text())
     usage.reset()
+    llm_client.configure(config.get("deepseek", {}), config.get("anthropic", {}))
+    llm_client.reset()
     text = Path(args.worklist).read_text()
     if handoff.looks_like_worklist(text):
         jobs = handoff.parse_worklist(text)          # structured ### JOB template
@@ -135,12 +137,16 @@ def run(args) -> int:
     dirs = handoff.resolve_dirs(config, args.handoff)
     done = 0
     for j in pending:
+        if llm_client.api_unavailable():
+            print("DeepSeek is accepting requests but not starting them (overloaded) -- "
+                  "stopping; re-run this file later.", file=sys.stderr)
+            break
         company, title = _resolve_company_title(j, config, args.dry_run)
         result = make_one(config, ctx, company, title, j["description"], args.dry_run)
         if result is None:
             continue
         resume_pdf, letter_pdf, unsupported, ats_result = result
-        folder = f"{handoff.slug(company)}__{handoff.slug(title)}"
+        folder = f"{handoff.slug(company)}__{handoff.slug(title)}__{handoff.job_hash(j['description'] or title)}"
         missing_md = missing_skills_md(title, company, j.get("url", ""), ats_result, ctx["evidence_skills"])
         delivered = handoff.deliver(folder, resume_pdf, letter_pdf, dirs,
                                     extra_texts={"missing_skills.md": missing_md})
@@ -152,6 +158,8 @@ def run(args) -> int:
 
     print(f"\nTailored {done}/{len(pending)} job(s).")
     if not args.dry_run:
+        diag = config.get("output", {}).get("ai_diagnostics", "output/ai_diagnostics.md")
+        print(f"{llm_client.write_report(diag)} -- details: {diag}")
         usage.finalize(config, logger, extra={"flow": "tailor_worklist", "jobs_tailored": done})
     return 0
 

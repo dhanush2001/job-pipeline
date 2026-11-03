@@ -3,7 +3,8 @@ Tests for the local on-disk response cache (deepseek.cache).
 
 The cache is opt-in and keyed on the exact request, so a re-run with identical
 inputs must reuse the saved response and make NO second API call. These tests
-stub requests.post with a call counter -- no API key or network needed.
+stub the HTTP call (a streamed SSE response) with a call counter -- no API key
+or network needed.
 """
 import json
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import src.llm_client as llm
 import src.tailor_resume as tr
 
 # A minimal but valid package payload the parser accepts.
@@ -27,16 +29,20 @@ _CONTENT = json.dumps({
 
 
 class _FakeResp:
+    """A streamed (SSE) chat response."""
     status_code = 200
+    headers: dict = {}
 
     def __init__(self, content):
         self._content = content
 
-    def raise_for_status(self):
-        pass
+    def iter_lines(self, decode_unicode=True):
+        yield "data: " + json.dumps({"choices": [{"delta": {"content": self._content},
+                                                  "finish_reason": "stop"}]})
+        yield "data: [DONE]"
 
-    def json(self):
-        return {"choices": [{"message": {"content": self._content}}]}
+    def close(self):
+        pass
 
 
 def _counting_post():
@@ -60,8 +66,8 @@ _BASE = dict(
 
 def test_cache_reuses_response_without_second_call():
     calls, fake_post = _counting_post()
-    original = tr.requests.post
-    tr.requests.post = fake_post
+    original = llm.requests.post
+    llm.requests.post = fake_post
     try:
         with tempfile.TemporaryDirectory() as cache_dir:
             kwargs = {**_BASE, "cache_enabled": True, "cache_dir": cache_dir}
@@ -72,27 +78,27 @@ def test_cache_reuses_response_without_second_call():
             assert first.summary == second.summary == "Tailored summary."
             assert len(list(Path(cache_dir).glob("*.json"))) == 1, "One cache file expected"
     finally:
-        tr.requests.post = original
+        llm.requests.post = original
     print("test_cache_reuses_response_without_second_call: PASS")
 
 
 def test_cache_disabled_calls_every_time():
     calls, fake_post = _counting_post()
-    original = tr.requests.post
-    tr.requests.post = fake_post
+    original = llm.requests.post
+    llm.requests.post = fake_post
     try:
         tr.generate_application_package(**_BASE)  # cache off by default
         tr.generate_application_package(**_BASE)
         assert calls["n"] == 2, f"Cache is off, expected 2 API calls, made {calls['n']}"
     finally:
-        tr.requests.post = original
+        llm.requests.post = original
     print("test_cache_disabled_calls_every_time: PASS")
 
 
 def test_different_job_misses_cache():
     calls, fake_post = _counting_post()
-    original = tr.requests.post
-    tr.requests.post = fake_post
+    original = llm.requests.post
+    llm.requests.post = fake_post
     try:
         with tempfile.TemporaryDirectory() as cache_dir:
             common = {"cache_enabled": True, "cache_dir": cache_dir}
@@ -103,7 +109,7 @@ def test_different_job_misses_cache():
             )
             assert calls["n"] == 2, f"Different input should miss; made {calls['n']} calls"
     finally:
-        tr.requests.post = original
+        llm.requests.post = original
     print("test_different_job_misses_cache: PASS")
 
 

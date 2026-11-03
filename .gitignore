@@ -34,3 +34,9 @@ data/*.tmp
 .cache/
 __pycache__/
 *.pyc
+
+# Per-run reports and test outputs (contain resume content)
+output/ai_diagnostics.md
+output/evaluation.md
+output/logs/
+.cache/

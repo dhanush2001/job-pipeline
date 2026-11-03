@@ -22,6 +22,7 @@ import base64
 import dataclasses
 import logging
 import os
+import re
 from typing import Any
 
 import requests
@@ -119,8 +120,9 @@ def fetch_repos(
     include_readmes: bool = True,
 ) -> list[Repo]:
     """
-    Fetch a user's repos, newest-pushed first. Forks are excluded by default
-    since they're generally not your work and dilute the signal.
+    Fetch a user's repos, newest-pushed first. Forks are excluded by default:
+    a fork's README describes the upstream project, not your work, so a
+    project built on a fork is described from master_resume.yaml alone.
     """
     if not username:
         logger.warning("No GitHub username configured -- skipping repo fetch")
@@ -145,6 +147,8 @@ def fetch_repos(
             continue
         if item.get("archived"):
             continue
+        if (item.get("name") or "").lower() == username.lower():
+            continue  # the profile-README repo, not a project
         repos.append(
             Repo(
                 name=item.get("name", ""),
@@ -165,3 +169,64 @@ def fetch_repos(
 
     logger.info("Fetched %d GitHub repos for %s", len(repos), username)
     return repos
+
+
+# ---- linking repos to master-resume projects ------------------------------------
+# A repo of your own is often the code behind a master-resume project
+# ("tiny-serve" -> "tiny-serve: LLM Inference Server"). Linked, they are ONE
+# project: the picker and the writer see the resume bullets AND the repo's
+# description/README together. A project links to a repo by its `github:` field
+# in master_resume.yaml, else when the project name starts with the repo name.
+# Projects with no repo (or only a fork, which is never fetched) use the master
+# resume alone.
+
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def linked_repo_names(master_resume: dict[str, Any]) -> dict[str, str]:
+    """{normalized repo name: master project name} for explicit `github:` links."""
+    out: dict[str, str] = {}
+    for proj in master_resume.get("projects", []) or []:
+        repo = str(proj.get("github") or "").rstrip("/").split("/")[-1]
+        if repo and proj.get("name"):
+            out[_norm(repo)] = proj["name"]
+    return out
+
+
+def link_repos(master_resume: dict[str, Any], repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copies of the repo prompt dicts, each tagged `same_project_as: <master
+    project name>` when it is the code for one."""
+    explicit = linked_repo_names(master_resume)
+    projects = [p.get("name", "") for p in master_resume.get("projects", []) or [] if p.get("name")]
+    out = []
+    for r in repos:
+        r = dict(r)
+        key = _norm(r.get("name", ""))
+        match = explicit.get(key)
+        if not match and len(key) >= 4:
+            match = next((n for n in projects if _norm(n).startswith(key)), None)
+        if match:
+            r["same_project_as"] = match
+        out.append(r)
+    return out
+
+
+def load_repos(config: dict[str, Any], master_resume: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fetch the configured user's own repos as prompt dicts, linked to their
+    master-resume projects. [] when disabled."""
+    gh_cfg = config.get("github", {})
+    if not gh_cfg.get("username"):
+        return []
+    repos = fetch_repos(
+        username=gh_cfg["username"],
+        token=os.environ.get("GITHUB_TOKEN"),
+        max_repos=gh_cfg.get("max_repos", 12),
+        include_forks=gh_cfg.get("include_forks", False),
+        include_readmes=gh_cfg.get("include_readmes", True),
+    )
+    linked = link_repos(master_resume, [r.to_prompt_dict() for r in repos])
+    pairs = [f"{r['name']} -> {r['same_project_as']}" for r in linked if r.get("same_project_as")]
+    if pairs:
+        logger.info("Linked GitHub repos to resume projects: %s", "; ".join(pairs))
+    return linked

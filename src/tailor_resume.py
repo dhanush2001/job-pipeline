@@ -24,22 +24,25 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
-import requests
-
-from src import usage
+from src import llm_client
 
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_API_BASE = "https://api.deepseek.com"
-REQUEST_TIMEOUT = 90
+# HTTP, timeouts, retries, and diagnostics live in llm_client (streamed calls
+# with a stall timeout + hard per-call deadline). Configure them under
+# `deepseek:` in config.yaml (connect_timeout, stall_timeout, call_deadline,
+# max_retries).
+DEEPSEEK_API_BASE = llm_client.DEEPSEEK_API_BASE
 
 # The old "deepseek-chat" / "deepseek-reasoner" aliases were retired in July
-# 2026 and folded into the V4 family. "deepseek-v4-flash" is the stable route
-# and the cheap tier; "deepseek-v4-pro" is ~3x the price and unnecessary here.
-DEFAULT_MODEL = "deepseek-v4-flash"
+# 2026. "deepseek-flash" is the current cheap tier (served by V4.1-Flash; the
+# legacy "deepseek-v4-flash" name still routes there). "deepseek-v4-pro" is ~3x
+# the price and unnecessary here.
+DEFAULT_MODEL = "deepseek-flash"
 
 # --- Thinking mode ---------------------------------------------------------
 # CRITICAL DEFAULT: DeepSeek V4 has thinking mode ENABLED BY DEFAULT at "high"
@@ -117,6 +120,19 @@ the job posting's own vocabulary. Specifically:
 - If evidence is thin, write something honest and general rather than
   something specific and false.
 
+## Keep each skill under the job where it was used
+`allowed_skills_by_entry` lists, for each experience id, the skills that job's
+own source text supports. An experience bullet may name ONLY those -- a skill
+from a project (or from another job) must not appear in an internship bullet,
+even though the candidate genuinely has it. The same goes for impact: claim an
+outcome for a job only if that job's source describes it. Put the skill where it
+belongs (the project, the skills section) instead. This is checked after you.
+
+## In-progress projects
+`in_progress_projects` are not finished. Describe them in progressive tense
+("Building...", "Implementing...") in their bullets AND in the summary -- never
+as completed work, and never with results or measurements they don't have yet.
+
 ## What good bullets look like
 GOOD: "Built an internal deploy tool that cut deploy time, used by the
 platform team" — concrete, traceable, scoped.
@@ -129,6 +145,16 @@ Lead each bullet with a strong past-tense verb. Prefer the posting's own
 terminology where it honestly describes the candidate's work (that is ATS
 keyword alignment). Do not keyword-stuff: a skills list padded with
 technologies the candidate has never touched fails the first phone screen.
+
+## Skills
+`skills` is the skills section for THIS role, chosen from the master resume
+(or evidenced in the GitHub repos), most relevant first — usually 20-30:
+first the skills this posting asks for, then skills CLOSE TO ITS FIELD that a
+hiring manager for this role would value (another database, web framework,
+cloud or testing tool next to the ones it names; for an ML role, other ML
+frameworks and data tools). Leave out skills from unrelated fields (e.g.
+Unity3D or diffusion models on a backend posting); they are dropped from this
+resume, which frees space for the summary.
 
 ## Emphasis — bold the keywords (REQUIRED)
 In every experience and project bullet, wrap the 2-4 most important technical
@@ -153,10 +179,20 @@ This is a strict layout constraint. Keep every bullet to a single line — about
 Concise, scannable bullets beat long ones on a six-second scan anyway.
 
 ## Projects
-Select the 2-3 projects most relevant to THIS role and return them ordered
-most-relevant first — never more than 3. Prefer the candidate's GitHub
-repositories when they are provided; fall back to the master resume's projects
-otherwise. Return only the project name (copied verbatim from the source so it
+If `selected_projects` is given, those projects were already chosen for this
+role: return EXACTLY those, in that order, with names copied verbatim, and write
+tailored bullets for each from that project's own evidence. Otherwise select the
+2-3 projects most relevant to THIS role and return them ordered most-relevant
+first — never more than 3 — from the master resume's projects and the GitHub
+repositories.
+
+A GitHub repo with `same_project_as` is the code behind that master-resume
+project: they are ONE project. Use the master-resume name, never list both, and
+write its bullets from the COMBINED evidence — the master bullets plus the
+repo's description, topics and README — choosing whichever points best match
+this posting (a README detail can replace a weaker master bullet). A project
+with no linked repo is written from the master resume alone.
+Return only the project name (copied verbatim from the source so it
 can be matched back to it) and tailored bullets: dates and tech stack are
 filled in from the source data automatically, so do NOT invent them here.
 
@@ -176,7 +212,7 @@ Respond with ONLY a JSON object, no markdown fences, no commentary:
     "gaps": ["requirements with no supporting evidence"]
   },
   "summary": "AT MOST 2 sentences (~2 resume lines), tailored to this role; lead with the single strongest relevant qualification. No fluff.",
-  "skills": ["most relevant first"],
+  "skills": ["only skills relevant to this posting, most relevant first"],
   "experience": [{"id": "<master resume id>", "bullets": ["..."]}],
   "projects": [{"name": "...", "bullets": ["..."]}],
   "cover_letter": "...",
@@ -240,6 +276,7 @@ def _build_user_prompt(
     job_description: str,
     github_repos: list[dict[str, Any]] | None = None,
     bullet_bank: str = "",
+    selected_projects: list[str] | None = None,
 ) -> str:
     """
     Key order matters for prompt caching -- stable content first, per-job
@@ -247,16 +284,23 @@ def _build_user_prompt(
     the bullet_bank are identical on every call, so they form the cached prefix;
     only target_job changes per posting and therefore goes last.
     """
+    from src.guards import allowed_skills_by_entry, in_progress_projects
+
     payload: dict[str, Any] = {"master_resume": master_resume}
     if github_repos:
         payload["github_repos"] = github_repos
     if bullet_bank:
         payload["bullet_bank"] = bullet_bank
+    # Derived from the master resume, so still part of the stable cached prefix.
+    payload["allowed_skills_by_entry"] = allowed_skills_by_entry(master_resume)
+    payload["in_progress_projects"] = [p.get("name", "") for p in in_progress_projects(master_resume)]
     payload["target_job"] = {
         "title": job_title,
         "company": company,
         "description": job_description[:6000],
     }
+    if selected_projects:
+        payload["selected_projects"] = selected_projects   # per-job, so after the cached prefix
     return json.dumps(payload)
 
 
@@ -362,6 +406,7 @@ def generate_application_package(
     max_tokens: int | None = None,
     cache_enabled: bool = False,
     cache_dir: str = ".cache/deepseek",
+    selected_projects: list[str] | None = None,
 ) -> ApplicationPackage | None:
     """
     reasoning: "disabled" (default) or one of low / high / max.
@@ -370,8 +415,8 @@ def generate_application_package(
     reasoning problem -- and because leaving it unset would silently mean
     "high" (see module constants above).
     """
-    if not api_key:
-        logger.error("No DeepSeek API key configured")
+    if not llm_client.has_key(api_key, model):
+        logger.error("No API key configured for %s", model)
         return None
 
     payload: dict[str, Any] = {
@@ -382,7 +427,7 @@ def generate_application_package(
                 "role": "user",
                 "content": _build_user_prompt(
                     master_resume, job_title, company, job_description,
-                    github_repos, bullet_bank,
+                    github_repos, bullet_bank, selected_projects,
                 ),
             },
         ],
@@ -391,7 +436,6 @@ def generate_application_package(
     payload.update(_thinking_params(reasoning, temperature))
     if max_tokens:
         payload["max_tokens"] = max_tokens
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     cache_key = _cache_key(payload) if cache_enabled else None
 
@@ -402,59 +446,74 @@ def generate_application_package(
             logger.info("Cache hit for %s @ %s -- skipping API call", job_title, company)
 
     if raw is None:
-        for attempt in range(max_retries + 1):
-            try:
-                resp = requests.post(
-                    f"{DEEPSEEK_API_BASE}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=REQUEST_TIMEOUT,
-                )
-                if resp.status_code == 429:
-                    logger.warning("DeepSeek rate limited (attempt %d) for %s", attempt + 1, job_title)
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                usage.record(data.get("usage"))
-                raw = data["choices"][0]["message"]["content"]
-                if cache_key:
-                    _cache_write(cache_dir, cache_key, raw)
-                break
-            except (requests.RequestException, KeyError, IndexError) as exc:
-                logger.warning(
-                    "DeepSeek call failed (attempt %d/%d) for %s @ %s: %s",
-                    attempt + 1, max_retries + 1, job_title, company, exc,
-                )
+        # Streamed, deadline-bounded, diagnosed call (see llm_client). Retries,
+        # backoff, and the per-call log line all happen inside.
+        result = llm_client.chat_json(payload, api_key, label=f"tailor {company} / {job_title}")
+        if not result.ok:
+            return None
+        raw = result.content
+        if cache_key:
+            _cache_write(cache_dir, cache_key, raw)
 
-    if raw is None:
-        logger.error("Giving up on %s @ %s after %d attempts", job_title, company, max_retries + 1)
-        return None
+    return _parse_package(raw, company)
 
+
+def _flat_strings(value: Any) -> list[str]:
+    """Flatten a model-returned list that may nest lists or hold non-strings
+    (seen live: "gaps": ["...", ["...", "..."]]) into plain, non-empty strings."""
+    if isinstance(value, (list, tuple)):
+        return [s for item in value for s in _flat_strings(item)]
+    if value is None or isinstance(value, dict):
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _normalize_analysis(analysis: Any) -> dict[str, Any]:
+    """job_analysis with every list field flattened to strings -- downstream
+    code joins them, and one malformed entry used to crash the whole run."""
+    if not isinstance(analysis, dict):
+        return {}
+    return {k: (_flat_strings(v) if isinstance(v, (list, tuple)) else v) for k, v in analysis.items()}
+
+
+def _parse_package(raw: str, company: str = "") -> "ApplicationPackage | None":
+    """Turn a raw model response into an ApplicationPackage, or None if it can't
+    be parsed. Hardened against a syntactically-valid response whose fields are
+    the wrong type -- e.g. `{"experience": null}` or a top-level list. A single
+    malformed response must never raise; it should degrade to None so the batch
+    can skip that one job and keep going (see main._generate)."""
     try:
         parsed = json.loads(_strip_fences(raw))
     except json.JSONDecodeError as exc:
         logger.error("Unparseable DeepSeek response: %s\nRaw: %s", exc, raw[:500])
         return None
+    if not isinstance(parsed, dict):
+        logger.error("DeepSeek response was not a JSON object (got %s)", type(parsed).__name__)
+        return None
 
+    # `x or []` / `x or ""` coerces an explicit null (or a wrong type) back to a
+    # safe default -- `.get(k, default)` does NOT, because the key is present
+    # with value None, so the default never applies.
     experience_bullets = {
-        entry.get("id"): entry.get("bullets", [])
-        for entry in parsed.get("experience", [])
-        if entry.get("id")
+        entry.get("id"): entry.get("bullets") or []
+        for entry in (parsed.get("experience") or [])
+        if isinstance(entry, dict) and entry.get("id")
     }
-    projects = _normalize_projects(parsed.get("projects", []))
-    note, truncated = _enforce_note_limit(parsed.get("referral_note", ""))
+    projects = _normalize_projects(parsed.get("projects") or [])
+    note, truncated = _enforce_note_limit(parsed.get("referral_note") or "")
     if truncated:
         logger.info("Referral note for %s exceeded 300 chars and was trimmed", company)
 
     return ApplicationPackage(
-        job_analysis=parsed.get("job_analysis", {}) or {},
-        summary=parsed.get("summary", ""),
-        skills=parsed.get("skills", []),
+        job_analysis=_normalize_analysis(parsed.get("job_analysis")),
+        summary=parsed.get("summary") or "",
+        skills=parsed.get("skills") or [],
         experience_bullets=experience_bullets,
         projects=projects,
-        cover_letter=parsed.get("cover_letter", "").strip(),
+        cover_letter=(parsed.get("cover_letter") or "").strip(),
         referral_note=note,
-        referral_dm=parsed.get("referral_dm", "").strip()[:LINKEDIN_DM_LIMIT],
+        referral_dm=(parsed.get("referral_dm") or "").strip()[:LINKEDIN_DM_LIMIT],
         note_was_truncated=truncated,
     )
 
@@ -482,7 +541,7 @@ def extract_company_title(
     no-thinking DeepSeek call. Returns None on any failure so the caller can
     fall back to a heuristic. Trims the posting so this stays a tiny request.
     """
-    if not api_key or not posting_text.strip():
+    if not llm_client.has_key(api_key, model) or not posting_text.strip():
         return None
     payload: dict[str, Any] = {
         "model": model,
@@ -495,18 +554,15 @@ def extract_company_title(
     payload.update(_thinking_params("disabled", 0.0))
     if max_tokens:
         payload["max_tokens"] = max_tokens
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    result = llm_client.chat_json(payload, api_key, label="extract company/title")
+    if not result.ok:
+        return None
     try:
-        resp = requests.post(
-            f"{DEEPSEEK_API_BASE}/chat/completions",
-            headers=headers, json=payload, timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        usage.record(data.get("usage"))
-        parsed = json.loads(_strip_fences(data["choices"][0]["message"]["content"]))
-    except (requests.RequestException, KeyError, IndexError, json.JSONDecodeError) as exc:
+        parsed = json.loads(_strip_fences(result.content))
+    except json.JSONDecodeError as exc:
         logger.warning("Company/title extraction failed: %s", exc)
+        return None
+    if not isinstance(parsed, dict):
         return None
     company = str(parsed.get("company", "")).strip()
     title = str(parsed.get("title", "")).strip()
@@ -561,3 +617,107 @@ def stub_application_package(
         referral_note=note,
         referral_dm=dm,
     )
+
+
+# ---- project selection (a separate, reasoning-enabled call) ------------------------
+_SELECT_PROMPT = """You choose which projects go on a resume for ONE job posting.
+
+You get `candidates` (the candidate's projects: from the master resume and from
+GitHub) and the `target_job`. Pick the `count` candidates that make the
+strongest case for THIS role, most relevant first. Weigh:
+- how directly the project's evidence shows the work this role does day to day;
+- how many of the posting's required skills it evidences (keyword coverage);
+- together, the picks should cover the posting's needs without repeating each other.
+Rules:
+- A master-resume candidate may carry `github_evidence` from the repo that is
+  its code: judge it on both together.
+- Judge only from each candidate's evidence -- never assume skills it doesn't show.
+- Copy each name EXACTLY as given.
+Respond with ONLY this json:
+{"projects": [{"name": "<exact candidate name>", "covers": ["posting skills it evidences"], "why": "<one line>"}]}"""
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def project_candidates(master_resume: dict[str, Any], github_repos: list[dict[str, Any]] | None) -> list[dict]:
+    """Every project the resume could show, with the evidence the picker judges from."""
+    out: list[dict] = []
+    linked: dict[str, list[dict]] = {}
+    for r in github_repos or []:
+        if r.get("same_project_as"):
+            linked.setdefault(r["same_project_as"], []).append(r)
+    for p in master_resume.get("projects", []) or []:
+        cand = {"name": p.get("name", ""), "source": "master_resume",
+                "technologies": p.get("technologies", ""),
+                "evidence": " ".join(p.get("bullets") or [])[:900]}
+        repos = linked.get(p.get("name", ""), [])
+        if repos:
+            # One project, both sources: the picker judges the combined case.
+            cand["source"] = "master_resume+github"
+            cand["github_evidence"] = " ".join(
+                (f"[{r.get('name', '')}] {r.get('description', '')} {' '.join(r.get('topics') or [])} "
+                 f"{r.get('readme_excerpt', '')}").strip() for r in repos)[:900]
+        out.append(cand)
+    for r in github_repos or []:
+        if r.get("same_project_as"):
+            continue  # already folded into its master-resume project
+        out.append({"name": r.get("name", ""), "source": "github",
+                    "technologies": r.get("language", ""),
+                    "evidence": f"{r.get('description', '')} {r.get('readme_excerpt', '')}".strip()[:900]})
+    return [c for c in out if c["name"]]
+
+
+def select_projects(
+    master_resume: dict[str, Any],
+    github_repos: list[dict[str, Any]] | None,
+    job_title: str,
+    company: str,
+    job_description: str,
+    api_key: str,
+    model: str = DEFAULT_MODEL,
+    reasoning: str = "high",
+    count: int = 3,
+    max_tokens: int = 8000,
+) -> tuple[list[str], list[str]] | None:
+    """Ask a reasoning-enabled model which `count` projects best fit the role.
+    Returns (names copied from the candidates, one-line reasons), or None on
+    any failure -- the caller then lets the tailoring call choose as before."""
+    candidates = project_candidates(master_resume, github_repos)
+    if not llm_client.has_key(api_key, model) or len(candidates) <= count:
+        return None
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SELECT_PROMPT},
+            {"role": "user", "content": json.dumps({
+                "candidates": candidates, "count": count,
+                "target_job": {"title": job_title, "company": company,
+                               "description": job_description[:6000]}})},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": max_tokens,
+    }
+    payload.update(_thinking_params(reasoning, 0.2))
+    result = llm_client.chat_json(payload, api_key, label=f"select projects {company} / {job_title}")
+    if not result.ok:
+        return None
+    try:
+        parsed = json.loads(_strip_fences(result.content))
+    except json.JSONDecodeError:
+        return None
+    picks = parsed.get("projects") if isinstance(parsed, dict) else None
+    by_norm = {_norm(c["name"]): c["name"] for c in candidates}
+    names, reasons = [], []
+    for p in picks or []:
+        if not isinstance(p, dict):
+            continue
+        key = _norm(p.get("name", ""))
+        name = by_norm.get(key) or next((v for k, v in by_norm.items() if key and (key in k or k in key)), None)
+        if name and name not in names:
+            names.append(name)
+            reasons.append(f"{name}: {str(p.get('why') or '').strip()}")
+        if len(names) >= count:
+            break
+    return (names, reasons) if names else None

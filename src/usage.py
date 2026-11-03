@@ -25,6 +25,7 @@ class Usage:
     output_tokens: int = 0      # completion tokens
     cache_hit_tokens: int = 0   # input billed at the cheaper cached rate
     cache_miss_tokens: int = 0  # input billed at the full rate
+    cache_write_tokens: int = 0 # input written to Anthropic's cache (billed above the full rate)
 
     def add(self, u: dict | None) -> None:
         if not u:
@@ -40,6 +41,7 @@ class Usage:
             self.cache_miss_tokens += int(miss or 0)
         else:
             self.cache_miss_tokens += prompt  # no split reported -> count all as miss
+        self.cache_write_tokens += int(u.get("cache_write_tokens", 0) or 0)
 
     @property
     def total_tokens(self) -> int:
@@ -51,7 +53,9 @@ class Usage:
         hit = (self.cache_hit_tokens / 1_000_000) * pricing.get("cache_hit_input_per_1m", 0.0)
         miss = (self.cache_miss_tokens / 1_000_000) * pricing.get("cache_miss_input_per_1m", 0.0)
         out = (self.output_tokens / 1_000_000) * pricing.get("output_per_1m", 0.0)
-        return hit + miss + out
+        write = (self.cache_write_tokens / 1_000_000) * pricing.get(
+            "cache_write_input_per_1m", pricing.get("cache_miss_input_per_1m", 0.0))
+        return hit + miss + out + write
 
 
 # ESTIMATE rates ($ per 1M tokens). DeepSeek's real rates vary by model and
@@ -64,25 +68,35 @@ DEFAULT_PRICING = {
 }
 
 _RUN = Usage()
+# The same calls split by model, so a run mixing DeepSeek and Claude prices each
+# at its own rates (see session_summary's model_pricing).
+_BY_MODEL: dict[str, Usage] = {}
 
 
 def reset() -> None:
     global _RUN
     _RUN = Usage()
+    _BY_MODEL.clear()
 
 
-def record(usage_dict: dict | None) -> None:
+def record(usage_dict: dict | None, model: str | None = None) -> None:
     """Called by each API wrapper with the response's `usage` object."""
     _RUN.add(usage_dict)
+    _BY_MODEL.setdefault(model or "", Usage()).add(usage_dict)
 
 
 def current() -> Usage:
     return _RUN
 
 
-def session_summary(pricing: dict | None = None) -> dict:
+def session_summary(pricing: dict | None = None, model_pricing: dict | None = None) -> dict:
+    """model_pricing: {model: rates} for models priced apart from `pricing`
+    (config `anthropic.pricing`); any other model uses `pricing`."""
     p = pricing or DEFAULT_PRICING
     u = _RUN
+    mp = model_pricing or {}
+    cost = (sum(m.cost_usd(mp.get(name) or p) for name, m in _BY_MODEL.items())
+            if _BY_MODEL else u.cost_usd(p))
     return {
         "calls": u.calls,
         "input_tokens": u.input_tokens,
@@ -90,17 +104,20 @@ def session_summary(pricing: dict | None = None) -> dict:
         "total_tokens": u.total_tokens,
         "cache_hit_tokens": u.cache_hit_tokens,
         "cache_miss_tokens": u.cache_miss_tokens,
-        "estimated_cost_usd": round(u.cost_usd(p), 4),
+        "estimated_cost_usd": round(cost, 4),
     }
 
 
-def append_session_log(log_path: str, pricing: dict | None = None, extra: dict | None = None) -> dict:
+def append_session_log(log_path: str, pricing: dict | None = None, extra: dict | None = None,
+                       model_pricing: dict | None = None) -> dict:
     """
     Append this session's usage to a JSONL history file and return
     {"session": {...}, "totals": {...}} where totals sum every logged session.
     One line per run, so you get per-session numbers and a running grand total.
     """
-    s = session_summary(pricing)
+    s = session_summary(pricing, model_pricing)
+    if any(_BY_MODEL):
+        s["models"] = sorted(m for m in _BY_MODEL if m)
     s["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     if extra:
         s.update(extra)
@@ -136,7 +153,8 @@ def finalize(config: dict, logger, extra: dict | None = None) -> dict:
     pricing = ds.get("pricing") or DEFAULT_PRICING
     log_path = out.get("usage_log", "data/usage_log.jsonl")
     report_path = out.get("token_usage", "output/token_usage.txt")
-    result = append_session_log(log_path, pricing, extra=extra)
+    model_pricing = (config.get("anthropic", {}) or {}).get("pricing") or {}
+    result = append_session_log(log_path, pricing, extra=extra, model_pricing=model_pricing)
     Path(report_path).parent.mkdir(parents=True, exist_ok=True)
     Path(report_path).write_text(format_report(result), encoding="utf-8")
     s, t = result["session"], result["totals"]
@@ -152,10 +170,10 @@ def format_report(result: dict) -> str:
     """Human-readable .txt report of this session + the running total."""
     s, t = result["session"], result["totals"]
     return "\n".join([
-        "# DeepSeek token usage",
+        "# AI token usage",
         "",
         "Token counts are exact (from the API). Cost is an ESTIMATE -- set your",
-        "real rates under deepseek.pricing in config.yaml to make it exact.",
+        "real rates under deepseek.pricing / anthropic.pricing in config.yaml.",
         "",
         f"This session ({s.get('timestamp','')}):",
         f"  API calls:      {s['calls']}",
@@ -163,6 +181,7 @@ def format_report(result: dict) -> str:
         f"  Output tokens:  {s['output_tokens']:,}",
         f"  Total tokens:   {s['total_tokens']:,}",
         f"  Est. cost:      ${s['estimated_cost_usd']:.4f}",
+        f"  Models:         {', '.join(s.get('models') or []) or '-'}",
         "",
         f"All sessions so far ({t['sessions']} runs):",
         f"  Calls:          {t['calls']}",

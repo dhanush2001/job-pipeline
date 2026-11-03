@@ -66,10 +66,68 @@ def test_calendar_years_are_not_flagged_as_metrics():
     report = verify_grounding(["Seeking a Summer 2027 internship; graduating 2026."], corpus, "job-yr")
     assert "2027" not in report.unsupported_numbers and "2026" not in report.unsupported_numbers
     assert report.unsupported_numbers == []
+    # Abbreviated years in a LinkedIn draft ("graduating Dec '26") are not metrics either.
+    assert verify_grounding(["Graduating Dec '26, open to roles."], corpus).unsupported_numbers == []
     # A suffixed number is still a metric and still flagged (not a bare year).
     r2 = verify_grounding(["Improved throughput by 87x"], corpus, "job-yr2")
     assert "87x" in r2.unsupported_numbers
     print("test_calendar_years_are_not_flagged_as_metrics: PASS")
+
+
+def test_job_description_cannot_ground_a_number():
+    """A metric that appears ONLY in the posting ("we aim to cut latency 47%") is
+    the employer's target, not the candidate's achievement. Entities from the JD
+    are fair to echo, but numbers must be grounded in the candidate's own sources."""
+    candidate_only = _corpus()  # no JD
+    full = _corpus(job_description="We aim to reduce p99 latency by 47%.")
+    texts = ["Reduced p99 latency by 47%"]
+    # Sanity: the full corpus (incl. JD) contains 47%, so default behaviour grounds it.
+    assert "47%" not in verify_grounding(texts, full).unsupported_numbers
+    # Correct behaviour: numbers checked against candidate-only sources -> flagged.
+    report = verify_grounding(texts, full, number_corpus=candidate_only)
+    assert "47%" in report.unsupported_numbers, report.unsupported_numbers
+    print("test_job_description_cannot_ground_a_number: PASS")
+
+
+def test_numbers_use_token_boundaries_not_substring():
+    """'20%' must NOT be grounded just because the digits '20' sit inside an
+    unrelated number like the year 2024 (the old substring bug)."""
+    corpus = "worked on the project across 2024 and 2025"  # contains 2024, no standalone 20
+    flagged = verify_grounding(["Improved conversion by 20%"], corpus, number_corpus=corpus)
+    assert "20%" in flagged.unsupported_numbers, flagged.unsupported_numbers
+    # A genuine standalone 20% still grounds it.
+    ok = verify_grounding(["Improved conversion by 20%"], "we saw a 20% lift", number_corpus="we saw a 20% lift")
+    assert "20%" not in ok.unsupported_numbers
+    print("test_numbers_use_token_boundaries_not_substring: PASS")
+
+
+def test_comma_formatted_numbers_are_grounded():
+    """A thousands-separated metric in the source ('ran 15,000 experiments') must
+    ground a '15,000' claim, even though the bare digits '15000' aren't a literal
+    substring of '15,000'. Regression guard for the token-boundary fix."""
+    corpus = "ran 15,000 experiments and processed 2,500,000 rows"
+    r = verify_grounding(["delivered 15,000 experiments over 2,500,000 rows"],
+                         corpus, number_corpus=corpus)
+    assert r.unsupported_numbers == [], r.unsupported_numbers
+    print("test_comma_formatted_numbers_are_grounded: PASS")
+
+
+def test_number_must_mean_the_same_thing():
+    """'Improved latency by 20%' is NOT supported by 'served 20 users': same
+    digits, different kind of quantity. Same-kind numbers about a different
+    subject are flagged for review, not passed silently."""
+    users = "served 20 users on the internal dashboard"
+    r = verify_grounding(["Improved latency by 20%"], users, number_corpus=users)
+    assert "20%" in r.unsupported_numbers and r.severity == "high", r
+    cost = "reduced cloud cost by 20% with autoscaling"
+    r2 = verify_grounding(["Improved latency by 20%"], cost, number_corpus=cost)
+    assert not r2.unsupported_numbers and r2.mismatched_context and r2.severity == "medium", r2
+    same = "cut p99 latency by 20% with caching"
+    r3 = verify_grounding(["Cut p99 latency by 20%"], same, number_corpus=same)
+    assert r3.severity == "clean", r3
+    mult = "3 kernels in total"
+    assert "3x" in verify_grounding(["Sped up kernels 3x"], mult, number_corpus=mult).unsupported_numbers
+    print("test_number_must_mean_the_same_thing: PASS")
 
 
 def test_job_description_terms_are_not_fabrication():
@@ -175,6 +233,10 @@ def test_report_only_lists_flagged_jobs():
 
 if __name__ == "__main__":
     test_faithful_content_is_clean()
+    test_job_description_cannot_ground_a_number()
+    test_numbers_use_token_boundaries_not_substring()
+    test_comma_formatted_numbers_are_grounded()
+    test_number_must_mean_the_same_thing()
     test_invented_metric_is_caught()
     test_invented_employer_is_caught()
     test_calendar_years_are_not_flagged_as_metrics()
@@ -186,3 +248,26 @@ if __name__ == "__main__":
     test_cover_letter_numbers_are_grounded()
     test_report_only_lists_flagged_jobs()
     print("\nAll grounding tests passed.")
+
+
+def test_rewrite_that_adds_scope_is_flagged():
+    """A real case: grounding passed, yet the judge turned 'used daily'
+    into 'self-serve'. The claim must appear in that entry's own sources."""
+    import types
+    from src.quality import verify_claims
+    master = {"experience": [{"id": "acme", "company": "Acme Corp",
+                              "bullets": ["Shipped an admin dashboard non-technical staff used daily"]}],
+              "projects": [{"name": "Matrix Engine: C", "bullets": ["Improved cache locality"]}]}
+    pkg = types.SimpleNamespace(
+        experience_bullets={"acme": ["Shipped a self-serve admin dashboard that improved staff workflows",
+                                     "Shipped an admin dashboard non-technical staff used daily"]},
+        projects=[{"name": "Matrix Engine", "bullets": ["Improved cache locality with tiling"]}],
+        summary="", cover_letter="Your team owns the platform. I led the dashboard work.")
+    found = verify_claims(pkg, master)
+    assert any('"self-serve"' in f and f.startswith("Acme") for f in found), found
+    # "Improved" in the Matrix project doesn't vouch for one at Acme...
+    assert any('"improved"' in f and f.startswith("Acme") for f in found), found
+    # ...but does vouch for the Matrix bullet itself.
+    assert not any(f.startswith("Matrix") for f in found), found
+    # Letters: only sentences about the candidate make claims.
+    assert any('"led"' in f for f in found) and not any('"owns"' in f for f in found), found

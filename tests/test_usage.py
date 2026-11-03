@@ -55,7 +55,7 @@ def test_session_log_accumulates_running_total():
         assert r2["totals"]["sessions"] == 2
         assert r2["totals"]["input_tokens"] == 400      # 100 + 300 across both runs
         assert r2["totals"]["output_tokens"] == 150
-        assert "DeepSeek token usage" in usage.format_report(r2)
+        assert "AI token usage" in usage.format_report(r2)
     print("test_session_log_accumulates_running_total: PASS")
 
 

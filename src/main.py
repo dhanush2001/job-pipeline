@@ -23,22 +23,25 @@ import json
 import logging
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import yaml
 
-from src import handoff
-from src.ats_score import missing_skills_md, score_resume, skills_in
-from src.github_projects import fetch_repos
-from src import usage
-from src.judge import judge_and_rewrite
+from src import app_questions, handoff
+from src.ats_score import claimable_missing, missing_skills_md, score_resume, skills_in
+from src.github_projects import load_repos
+from src import llm_client, usage
+from src.judge import judge_and_rewrite, repair_summary_tense
 from src.locations import country_of, is_targeted
 from src.match import filter_and_rank, rerank_by_ats
-from src.render_resume import merge_tailored_content, render_cover_letter, render_resume
-from src.quality import build_source_corpus, verify_grounding, write_grounding_report
+from src.render_resume import merge_tailored_content, render_cover_letter, render_resume, scope_master
+from src.evaluate import save_record
+from src.guards import apply_judge, enforce_projects, guard_tailored
+from src.quality import build_source_corpus, verify_claims, verify_grounding, write_grounding_report
 from src.scan_jobs import scan_all
-from src.tailor_resume import generate_application_package, stub_application_package
+from src.tailor_resume import generate_application_package, select_projects, stub_application_package
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("main")
@@ -46,6 +49,19 @@ logger = logging.getLogger("main")
 # Below this many chars, a job description is too thin to tailor against, so the
 # job is routed to the fill-in worklist instead of a (poor, ungrounded) tailoring.
 MIN_DESC_CHARS = 120
+
+
+def _expected_grad_year(master_resume: dict) -> int | None:
+    """Year from the first education entry whose dates say "Expected ..." (e.g.
+    "Expected December 2026" -> 2026). None if there isn't one."""
+    import re
+    for edu in master_resume.get("education", []) or []:
+        dates = str(edu.get("dates", ""))
+        if "expected" in dates.lower():
+            m = re.search(r"\b(20\d{2})\b", dates)
+            if m:
+                return int(m.group(1))
+    return None
 
 
 def load_seen(path: str) -> set[str]:
@@ -90,11 +106,15 @@ def run(config_path: str, dry_run: bool = False, limit: int | None = None) -> No
         )
 
     usage.reset()  # fresh token accounting for this run
+    # Streamed, deadline-bounded AI calls with per-call diagnostics.
+    llm_client.configure(config.get("deepseek", {}), config.get("anthropic", {}))
+    llm_client.reset()
 
     seen_log_path = config.get("seen_log_path", "data/seen_jobs.json")
     already_seen = load_seen(seen_log_path)
 
     master_resume = yaml.safe_load(Path(config["resume"]["master_data"]).read_text())
+    master_resume.pop("private", None)  # personal notes: never sent to a model or printed
 
     # Optional bullet bank: a curated menu of pre-written project bullets the
     # model may draw from and rephrase. Loaded once (same for every job) and
@@ -117,9 +137,10 @@ def run(config_path: str, dry_run: bool = False, limit: int | None = None) -> No
     # Quality profiles bundle the settings that move together. Explicit
     # model/reasoning keys in config still win over the profile.
     PROFILES = {
-        "fast":     {"model": "deepseek-v4-flash", "reasoning": "disabled", "max_tokens": None},
-        "balanced": {"model": "deepseek-v4-flash", "reasoning": "low",      "max_tokens": 8000},
+        "fast":     {"model": "deepseek-flash", "reasoning": "disabled", "max_tokens": None},
+        "balanced": {"model": "deepseek-flash", "reasoning": "low",      "max_tokens": 8000},
         "high":     {"model": "deepseek-v4-pro",   "reasoning": "high",     "max_tokens": 16000},
+        "flash-high": {"model": "deepseek-flash", "reasoning": "high",   "max_tokens": 16000},
     }
     profile_name = config.get("quality", {}).get("profile", "balanced")
     profile = PROFILES.get(profile_name, PROFILES["balanced"])
@@ -144,24 +165,18 @@ def run(config_path: str, dry_run: bool = False, limit: int | None = None) -> No
 
     # Fetch GitHub repos ONCE per run -- same for every posting, and each
     # fetch spends GitHub API rate-limit budget.
-    gh_cfg = config.get("github", {})
-    github_repos = []
-    if gh_cfg.get("username"):
-        repos = fetch_repos(
-            username=gh_cfg["username"],
-            token=os.environ.get("GITHUB_TOKEN"),
-            max_repos=gh_cfg.get("max_repos", 12),
-            include_forks=gh_cfg.get("include_forks", False),
-            include_readmes=gh_cfg.get("include_readmes", True),
-        )
-        github_repos = [r.to_prompt_dict() for r in repos]
+    github_repos = load_repos(config, master_resume)
 
     jobs = scan_all(config)
 
     # Resolve each job's country (Adzuna jobs already carry it; company-board
     # jobs get it inferred from their location text), then keep only the
     # countries we're targeting. This drops foreign roles BEFORE any LLM call.
-    matching_cfg = config.get("matching", {})
+    matching_cfg = dict(config.get("matching", {}))
+    # Graduation year for the eligibility screen: explicit config wins, else read
+    # the first "Expected <Month> <Year>" education entry from the master resume.
+    if not matching_cfg.get("graduation_year"):
+        matching_cfg["graduation_year"] = _expected_grad_year(master_resume)
     targets = matching_cfg.get("target_countries", [])
     for j in jobs:
         if not j.country:
@@ -173,14 +188,26 @@ def run(config_path: str, dry_run: bool = False, limit: int | None = None) -> No
                     len(jobs), before, ", ".join(targets))
 
     new_jobs = [j for j in jobs if j.id not in already_seen]
-    ranked = filter_and_rank(new_jobs, matching_cfg)
+    ranked_all = filter_and_rank(new_jobs, matching_cfg)
 
-    # Re-rank by how well the master resume matches each posting, so the jobs
-    # generated first are the ones you'll score highest on. min_jd_skills /
-    # min_ats optionally drop weak matches.
+    # Split on whether we actually have a description to tailor against BEFORE
+    # the ATS re-rank. A description-less posting names ~0 skills, so min_jd_skills
+    # / min_ats would drop it -- if we filtered first it would vanish instead of
+    # reaching the paste worklist. Jobs with no description can't be tailored or
+    # ATS-scored, so they go to a fill-in worklist: you paste the description and
+    # run `python -m src.tailor_worklist`.
+    described = [(j, s) for (j, s) in ranked_all
+                 if len((j.description or "").strip()) >= MIN_DESC_CHARS]
+    needs_desc_all = [(j, s) for (j, s) in ranked_all
+                      if len((j.description or "").strip()) < MIN_DESC_CHARS]
+
+    # Re-rank the described jobs by how well the master resume matches each
+    # posting, so the jobs generated first are the ones you'll score highest on.
+    # min_jd_skills / min_ats optionally drop weak matches.
     ranked = rerank_by_ats(
-        ranked, master_resume,
+        described, master_resume,
         min_ats=matching_cfg.get("min_ats", 0),
+        min_ats_it=matching_cfg.get("min_ats_it_support"),
         min_jd_skills=matching_cfg.get("min_jd_skills", 0),
         prefer_engineering=matching_cfg.get("prefer_engineering_roles", True),
     )
@@ -215,41 +242,69 @@ def run(config_path: str, dry_run: bool = False, limit: int | None = None) -> No
         ranked = kept
 
     max_per_run = limit if limit is not None else config.get("limits", {}).get("max_jobs_per_run", 100)
-    capped = ranked[:max_per_run]
-    if country_priority and capped:
+    selected = ranked[:max_per_run]
+    # Cap the worklist too, so a source that omits descriptions can't flood it.
+    needs_desc = needs_desc_all[:max_per_run]
+    if country_priority and selected:
         from collections import Counter
-        dist = Counter(j.country for j, _ in capped)
+        dist = Counter(j.country for j, _ in selected)
         logger.info("Country fill (cap %d): %s", max_per_run,
                     ", ".join(f"{c}={n}" for c, n in sorted(dist.items(), key=lambda x: -x[1])))
 
-    # Split by whether we actually have a description to tailor against. Jobs
-    # with none (e.g. a source that omits it, or a failed detail fetch) can't be
-    # tailored well, so they go to a fill-in worklist instead -- you paste the
-    # description and run `python -m src.tailor_worklist`.
-    selected = [(j, s) for (j, s) in capped if len((j.description or "").strip()) >= MIN_DESC_CHARS]
-    needs_desc = [(j, s) for (j, s) in capped if len((j.description or "").strip()) < MIN_DESC_CHARS]
     logger.info(
         "%d new jobs matched out of %d scanned; tailoring %d, %d need a pasted description",
-        len(ranked), len(jobs), len(selected), len(needs_desc),
+        len(ranked_all), len(jobs), len(selected), len(needs_desc),
     )
 
     # --- Generation: parallel, since this is network-bound ---
     packages: dict[str, tuple] = {}
     judge_reviews: dict[str, dict] = {}
     judge_enabled = config.get("judge", {}).get("enabled", False) and not dry_run
+    # Application-form questions (Greenhouse/Ashby): fetched and answered per job.
+    questions_cfg = config.get("application_questions", {})
+    questions_enabled = questions_cfg.get("enabled", True) and not dry_run
+    app_answers: dict[str, list | None] = {}
     # Skills the candidate can HONESTLY claim (master resume + bank + repos). The
     # judge is only allowed to weave in missing keywords from THIS set, so it
     # can't add a JD keyword the candidate lacks (which grounding would miss,
     # since the keyword is in the posting).
     evidence_skills = skills_in(json.dumps(master_resume), bullet_bank, json.dumps(github_repos))
 
+    # Run-level deadline: once it passes, jobs not yet started are skipped (and
+    # reported) instead of the run hanging indefinitely. In-flight calls are
+    # still bounded by deepseek.call_deadline.
+    run_minutes = config.get("deepseek", {}).get("run_deadline_minutes")
+    run_deadline_at = time.monotonic() + 60 * float(run_minutes) if run_minutes else None
+    skipped_for_deadline: list[str] = []
+
+    guard_notes: dict[str, list[str]] = {}
+    sel_cfg = config.get("project_selection", {}) or {}
+
+    def _pick_projects(title: str, company: str, description: str):
+        if dry_run or not sel_cfg.get("enabled"):
+            return None
+        return select_projects(master_resume, github_repos, title, company, description, deepseek_key,
+                               model=sel_cfg.get("model") or "deepseek-flash",
+                               reasoning=sel_cfg.get("reasoning") or "high",
+                               count=int(sel_cfg.get("count", 3)))
+
     def _generate(pair):
         job, score = pair
+        # Gated experience (e.g. the IT job on IT/help-desk roles only) is removed
+        # here so the model never sees it for other roles.
+        job_master = scope_master(master_resume, job.title, f"{job.title} {job.description}")
         if dry_run:
-            pkg = stub_application_package(master_resume, job.title, job.company)
+            pkg = stub_application_package(job_master, job.title, job.company)
             return job, score, pkg, None
+        if (run_deadline_at and time.monotonic() > run_deadline_at) or llm_client.api_unavailable():
+            skipped_for_deadline.append(job.id)
+            return job, score, None, None
+        # Project picking: a separate, reasoning-enabled call (project_selection
+        # in config.yaml) chooses which projects this role should see.
+        picked = _pick_projects(job.title, job.company, job.description)
         pkg = generate_application_package(
-            master_resume=master_resume,
+            selected_projects=picked[0] if picked else None,
+            master_resume=job_master,
             job_title=job.title,
             company=job.company,
             job_description=job.description,
@@ -263,44 +318,85 @@ def run(config_path: str, dry_run: bool = False, limit: int | None = None) -> No
             cache_enabled=cache_enabled,
             cache_dir=cache_dir,
         )
+        # Guard the tailoring pass: skills stay under the job where they were used.
+        notes = guard_tailored(pkg, job_master)
+        if picked:
+            notes += [f"projects picked: {'; '.join(picked[1])}"] + enforce_projects(pkg, picked[0])
         # Second pass: senior-recruiter/hiring-manager judge rewrites the
         # experience bullets in XYZ form, weaving in the ATS-missing keywords.
         review = None
         if pkg is not None and judge_enabled:
             merged_pre = merge_tailored_content(
-                master_resume, pkg, github_repos,
-                job_text=f"{job.title} {job.description}",
+                job_master, pkg, github_repos, config.get("resume", {}).get("include_summary"),
+                job_text=f"{job.title} {job.description}", job_title=job.title,
             )
             # Only keywords the posting wants AND the candidate actually has,
             # but that aren't on the resume yet -- honest gaps to close.
-            missing = [k for k in score_resume(merged_pre, job.description)["missing"]
-                       if k in evidence_skills]
+            missing = claimable_missing(score_resume(merged_pre, job.description)["missing"],
+                                        evidence_skills)
             review = judge_and_rewrite(
-                master_resume=master_resume, github_repos=github_repos,
+                master_resume=job_master, github_repos=github_repos,
                 bullet_bank=bullet_bank, job_title=job.title, company=job.company,
                 job_description=job.description, experience_bullets=pkg.experience_bullets,
-                missing_keywords=missing, api_key=deepseek_key, model=model,
+                missing_keywords=missing, api_key=deepseek_key,
+                model=config.get("judge", {}).get("model") or model,
                 current_summary=pkg.summary,
                 reasoning=reasoning, temperature=temperature, max_tokens=max_tokens,
             )
-            if review and review["experience"]:
-                pkg.experience_bullets.update(review["experience"])  # swap in rewritten bullets
-            if review and review.get("summary"):
-                pkg.summary = review["summary"]  # stop-the-scroll summary rewrite
+        # Merge the judge's rewrite through the guards (per-job skill scoping,
+        # flagged-phrase repair, in-progress overclaim check).
+        repair = (lambda summ, names, flagged: repair_summary_tense(
+            summ, names, flagged, deepseek_key, model)) if not dry_run else None
+        notes += apply_judge(pkg, review, job_master, repair)
+        if notes:
+            guard_notes[job.id] = notes
+            logger.info("Guards adjusted %s @ %s: %s", job.title, job.company, " | ".join(notes)[:300])
+        if pkg is not None and questions_enabled:
+            app_answers[job.id] = app_questions.answer_application(
+                job, job_master, candidate, config.get("application_profile") or [],
+                github_repos=github_repos, bullet_bank=bullet_bank, api_key=deepseek_key, model=model,
+                reasoning=reasoning, temperature=temperature, max_tokens=max_tokens,
+            )
         return job, score, pkg, review
 
+    if selected and not dry_run:
+        s = llm_client.settings()
+        logger.info(
+            "Generating %d package(s): concurrency %d, per-call deadline %.0fs (stall %.0fs), %s",
+            len(selected), workers, s["call_deadline"], s["stall_timeout"],
+            f"run deadline {run_minutes} min" if run_minutes else "no run deadline")
+    gen_started = time.monotonic()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_generate, pair) for pair in selected]
+        futures = {pool.submit(_generate, pair): pair for pair in selected}
         for done, future in enumerate(as_completed(futures), 1):
-            job, score, pkg, review = future.result()
+            # Isolate failures per job: one raised exception (a malformed
+            # response, a transient network error) must skip only that job, not
+            # abort the whole batch and lose every package already generated.
+            try:
+                job, score, pkg, review = future.result()
+            except Exception as exc:  # noqa: BLE001 -- deliberately broad; one bad job can't kill the run
+                bad_job, _ = futures[future]
+                logger.warning("Generation raised for %s -- skipping: %s", bad_job.id, exc)
+                continue
             if pkg is None:
-                logger.warning("Generation failed for %s -- skipping", job.id)
+                if job.id not in skipped_for_deadline:
+                    logger.warning("Generation failed for %s -- skipping (see AI call log above)", job.id)
                 continue
             packages[job.id] = (job, score, pkg)
             if review:
                 judge_reviews[job.id] = review
-            if done % 10 == 0:
-                logger.info("Generated %d/%d packages", done, len(futures))
+            if done % 5 == 0 or done == len(futures):
+                logger.info("Progress: %d/%d jobs finished, %d succeeded, %.0fs elapsed",
+                            done, len(futures), len(packages), time.monotonic() - gen_started)
+
+    if skipped_for_deadline:
+        why = ("DeepSeek accepted requests but never started them (provider overloaded)"
+               if llm_client.api_unavailable() else f"run deadline ({run_minutes} min) reached")
+        logger.warning("%s: %d job(s) not started -- they stay unseen and will be picked up next run",
+                       why, len(skipped_for_deadline))
+    if not dry_run and selected:
+        diag_path = config.get("output", {}).get("ai_diagnostics", "output/ai_diagnostics.md")
+        logger.info("%s -- details: %s", llm_client.write_report(diag_path), diag_path)
 
     # --- Rendering: sequential, CPU-bound ---
     queue: list[dict] = []
@@ -308,85 +404,129 @@ def run(config_path: str, dry_run: bool = False, limit: int | None = None) -> No
     resume_dir = config["resume"]["output_dir"]
     letter_dir = config.get("cover_letter", {}).get("output_dir", "output/cover_letters")
     want_letters = config.get("cover_letter", {}).get("enabled", True)
-    include_summary = config.get("resume", {}).get("include_summary", False)
+    include_summary = config.get("resume", {}).get("include_summary")  # None: follow the master
     force_one_page = config.get("resume", {}).get("force_one_page", True)
 
     # Copy finished PDFs into Downloads/Desktop (job-applications/) for manual
     # upload. Empty when those folders don't exist (e.g. CI) or handoff_dirs: [].
-    handoff_dirs = handoff.resolve_dirs(config)
+    # A dry run's placeholder PDFs must never land next to real applications.
+    handoff_dirs = [] if dry_run else handoff.resolve_dirs(config)
     handoff_count = 0
 
     grounding_reports = []
 
     for job, score, pkg in packages.values():
-        # One subfolder per company; filename is the job id within it.
-        # e.g. output/resumes/stripe/4512345.pdf
-        company_dir = _slug(job.company)
-        job_file = _slug(job.id.split(":")[-1])
-        # Deliver nested by country: <Country>/<company>__<role>__<jobid>. The
-        # job id keeps each per-job folder unique so two roles with the same
-        # title at one company can't overwrite each other.
-        country_dir = _slug(job.country or "Remote")
-        handoff_folder = f"{country_dir}/{company_dir}__{handoff.slug(job.title)}__{job_file}"
+        # One malformed package must not abort the rest of the batch (a nested
+        # list in the model's JSON once crashed a 35-job run after 7 PDFs).
+        try:
+            # One subfolder per company; filename is the job id within it.
+            # e.g. output/resumes/stripe/4512345.pdf
+            company_dir = _slug(job.company)
+            job_file = _slug(job.id.split(":")[-1])
+            # Deliver nested by country: <Country>/<company>__<role>__<jobid>. The
+            # job id keeps each per-job folder unique so two roles with the same
+            # title at one company can't overwrite each other.
+            country_dir = _slug(job.country or "Remote")
+            handoff_folder = f"{country_dir}/{company_dir}__{handoff.slug(job.title)}__{job_file}"
 
-        # Verify before rendering -- a fabricated metric shouldn't reach a PDF
-        # unflagged just because the LaTeX compiled fine. Covers the cover
-        # letter and LinkedIn drafts too, not just the resume body.
-        corpus = build_source_corpus(master_resume, github_repos, job.description, bullet_bank)
-        report = verify_grounding(pkg.groundable_texts(), corpus, job_id=f"{job.company} — {job.title}")
-        grounding_reports.append(report)
-        if report.severity == "high":
-            logger.warning(
-                "UNVERIFIED NUMBERS in %s @ %s: %s -- check before sending",
-                job.title, job.company, ", ".join(report.unsupported_numbers),
+            # Verify before rendering -- a fabricated metric shouldn't reach a PDF
+            # unflagged just because the LaTeX compiled fine. Covers the cover
+            # letter and LinkedIn drafts too, not just the resume body.
+            corpus = build_source_corpus(master_resume, github_repos, job.description, bullet_bank)
+            # Numbers are checked against the candidate's own sources only (no job
+            # description) -- a metric printed in the posting is its target, not proof
+            # the candidate achieved it.
+            number_corpus = build_source_corpus(master_resume, github_repos, "", bullet_bank)
+            report = verify_grounding(pkg.groundable_texts(), corpus,
+                                      job_id=f"{job.company} — {job.title}", number_corpus=number_corpus)
+            report.unsupported_claims = verify_claims(pkg, master_resume, bullet_bank, github_repos)
+            grounding_reports.append(report)
+            if report.severity == "high":
+                logger.warning(
+                    "UNVERIFIED NUMBERS in %s @ %s: %s -- check before sending",
+                    job.title, job.company, ", ".join(report.unsupported_numbers),
+                )
+            if pkg.job_analysis.get("gaps"):
+                logger.info("Gaps for %s: %s", job.company, "; ".join(pkg.job_analysis["gaps"][:3]))
+            merged = merge_tailored_content(
+                master_resume, pkg, github_repos, include_summary,
+                job_text=f"{job.title} {job.description}", job_title=job.title,
             )
-        if pkg.job_analysis.get("gaps"):
-            logger.info("Gaps for %s: %s", job.company, "; ".join(pkg.job_analysis["gaps"][:3]))
-        merged = merge_tailored_content(
-            master_resume, pkg, github_repos, include_summary,
-            job_text=f"{job.title} {job.description}",
-        )
-        pdf_path = f"{resume_dir}/{company_dir}/{job_file}.pdf"
-        if not render_resume(merged, config["resume"]["template"], pdf_path, fit_one_page=force_one_page):
-            logger.warning("Skipping %s -- resume render failed", job.id)
-            continue
+            pdf_path = f"{resume_dir}/{company_dir}/{job_file}.pdf"
+            rendered = render_resume(merged, config["resume"]["template"], pdf_path, fit_one_page=force_one_page)
+            if not rendered:
+                logger.warning("Skipping %s -- resume render failed", job.id)
+                continue
+            if force_one_page and not rendered.one_page_ok:
+                logger.warning("%s @ %s: resume could not be trimmed to one page (%s pp)",
+                               job.title, job.company, rendered.pages)
 
-        ats = score_resume(merged, job.description)
+            # Score the content that was ACTUALLY rendered (possibly trimmed to fit
+            # one page), not the pre-trim merge -- otherwise the reported ATS would
+            # overstate what's in the PDF.
+            ats = score_resume(rendered.data, job.description)
+            # Sidecar record for `python -m src.evaluate` (tailored vs. master side-by-side).
+            save_record(pdf_path, {"id": job.id, "title": job.title, "company": job.company,
+                                   "url": job.apply_url, "location": job.location,
+                                   "description": job.description},
+                        rendered.data, ats, report, pkg, judge_reviews.get(job.id),
+                        guard_notes.get(job.id))
 
-        letter_pdf = None
-        if want_letters and pkg.cover_letter:
-            letter_pdf = f"{letter_dir}/{company_dir}/{job_file}.pdf"
-            if not render_cover_letter(
-                pkg, candidate, job.company,
-                config.get("cover_letter", {}).get("template", "templates/cover_letter.tex.j2"),
-                letter_pdf,
-            ):
-                logger.warning("Cover letter render failed for %s", job.id)
-                letter_pdf = None
+            letter_pdf = None
+            if want_letters and pkg.cover_letter:
+                letter_pdf = f"{letter_dir}/{company_dir}/{job_file}.pdf"
+                if not render_cover_letter(
+                    pkg, candidate, job.company,
+                    config.get("cover_letter", {}).get("template", "templates/cover_letter.tex.j2"),
+                    letter_pdf,
+                ):
+                    logger.warning("Cover letter render failed for %s", job.id)
+                    letter_pdf = None
 
-        queue.append({
-            "job_id": job.id, "title": job.title, "company": job.company,
-            "location": job.location, "country": job.country or "Remote",
-            "score": score, "apply_url": job.apply_url,
-            "source": job.source,
-            "resume_pdf": pdf_path,
-            "cover_letter_pdf": letter_pdf,
-            "cover_letter_txt": str(Path(letter_pdf).with_suffix(".txt")) if letter_pdf else None,
-            "ats_score": ats["score"], "ats_matched": ats["matched"], "ats_missing": ats["missing"],
-            "handoff_folder": handoff_folder,
-        })
-        referral_entries.append({
-            "company": job.company, "title": job.title, "url": job.url,
-            "note": pkg.referral_note, "dm": pkg.referral_dm,
-            "note_len": len(pkg.referral_note),
-        })
-        if handoff_dirs:
-            missing_md = missing_skills_md(job.title, job.company, job.apply_url, ats,
-                                           evidence_skills, judge_reviews.get(job.id))
-            handoff.deliver(handoff_folder, pdf_path, letter_pdf, handoff_dirs,
-                            extra_texts={"missing_skills.md": missing_md})
-            handoff_count += 1
-        already_seen.add(job.id)
+            questions_md, questions_path = None, None
+            if job.id in app_answers:
+                qs = app_answers[job.id]
+                written = [q.answer for q in qs or [] if q.kind == "written" and q.answer]
+                flagged = verify_grounding(written, corpus, number_corpus=number_corpus).unsupported_numbers \
+                    if written else []
+                questions_md = app_questions.render_markdown(job, qs, flagged)
+                questions_path = Path(questions_cfg.get("output_dir", "output/application_questions")) \
+                    / company_dir / f"{job_file}.md"
+                questions_path.parent.mkdir(parents=True, exist_ok=True)
+                questions_path.write_text(questions_md, encoding="utf-8")
+
+            queue.append({
+                "job_id": job.id, "title": job.title, "company": job.company,
+                "location": job.location, "country": job.country or "Remote",
+                "score": score, "apply_url": job.apply_url,
+                "source": job.source,
+                "resume_pdf": pdf_path,
+                "cover_letter_pdf": letter_pdf,
+                "cover_letter_txt": str(Path(letter_pdf).with_suffix(".txt")) if letter_pdf else None,
+                "ats_score": ats["score"], "ats_matched": ats["matched"], "ats_missing": ats["missing"],
+                "handoff_folder": handoff_folder,
+                "application_questions": str(questions_path) if questions_path else None,
+            })
+            referral_entries.append({
+                "company": job.company, "title": job.title, "url": job.url,
+                "note": pkg.referral_note, "dm": pkg.referral_dm,
+                "note_len": len(pkg.referral_note),
+            })
+            if handoff_dirs:
+                missing_md = missing_skills_md(job.title, job.company, job.apply_url, ats,
+                                               evidence_skills, judge_reviews.get(job.id))
+                extra = {"missing_skills.md": missing_md}
+                if pkg.referral_note or pkg.referral_dm:
+                    extra["referral.txt"] = _referral_text(job.company, [referral_entries[-1]])
+                if questions_md:
+                    extra["application_questions.md"] = questions_md
+                handoff.deliver(handoff_folder, pdf_path, letter_pdf, handoff_dirs,
+                                extra_texts=extra)
+                handoff_count += 1
+            already_seen.add(job.id)
+        except Exception:
+            logger.exception("Rendering failed for %s @ %s -- skipped; it stays unseen and is retried next run",
+                             job.title, job.company)
 
     queue_path = config.get("apply_queue_path", "data/apply_queue.json")
     Path(queue_path).parent.mkdir(parents=True, exist_ok=True)
@@ -624,6 +764,35 @@ def _write_apply_index(queue: list[dict], path: str, handoff_dirs: list | None =
     logger.info("Wrote apply index (%d jobs) -> %s and %s", len(queue), path, where)
 
 
+def _referral_text(company: str, entries: list[dict]) -> str:
+    """Plain-text referral drafts for one company: the per-company file in
+    output/referrals/ and the referral.txt in each job's folder."""
+    bar = "=" * 68
+    lines = [
+        f"LinkedIn referral drafts -- {company}",
+        "",
+        "Send these MANUALLY. Connection-request notes are capped at 300",
+        "characters by LinkedIn; the count is shown so you can verify before",
+        "pasting.",
+        "",
+    ]
+    for e in sorted(entries, key=lambda x: x["title"]):
+        lines += [
+            bar,
+            e["title"],
+            e["url"],                       # bare URL on its own line = easy to copy
+            "",
+            f"Connection note ({e['note_len']}/300 chars):",
+            e["note"],
+            "",
+            "Follow-up DM (after they accept):",
+            e["dm"],
+            "",
+        ]
+    lines.append(bar)
+    return "\n".join(lines) + "\n"
+
+
 def _write_referrals(entries: list[dict], out_dir: str) -> None:
     """
     One PLAIN-TEXT file per company (<out_dir>/<company>.txt), each holding every
@@ -641,31 +810,9 @@ def _write_referrals(entries: list[dict], out_dir: str) -> None:
     for e in entries:
         by_company.setdefault(e["company"], []).append(e)
 
-    bar = "=" * 68
     for company, company_entries in sorted(by_company.items()):
-        lines = [
-            f"LinkedIn referral drafts -- {company}",
-            "",
-            "Send these MANUALLY. Connection-request notes are capped at 300",
-            "characters by LinkedIn; the count is shown so you can verify before",
-            "pasting.",
-            "",
-        ]
-        for e in sorted(company_entries, key=lambda x: x["title"]):
-            lines += [
-                bar,
-                e["title"],
-                e["url"],                       # bare URL on its own line = easy to copy
-                "",
-                f"Connection note ({e['note_len']}/300 chars):",
-                e["note"],
-                "",
-                "Follow-up DM (after they accept):",
-                e["dm"],
-                "",
-            ]
-        lines.append(bar)
-        (out / f"{_slug(company)}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (out / f"{_slug(company)}.txt").write_text(_referral_text(company, company_entries),
+                                                   encoding="utf-8")
 
     logger.info(
         "Wrote %d referral drafts (.txt) across %d companies -> %s/",

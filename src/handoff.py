@@ -157,6 +157,14 @@ def slug(text: str) -> str:
     return s or "job"
 
 
+def job_hash(text: str, n: int = 8) -> str:
+    """Short, stable suffix that disambiguates two postings sharing the same
+    company + title (e.g. two different 'Software Engineer' reqs at one company),
+    so their resume/cover-letter/handoff paths don't collide and overwrite."""
+    import hashlib
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:n]
+
+
 def resolve_dirs(config: dict, override: str | None = None) -> list[Path]:
     """
     Existing target dirs, each with the job-applications/ subfolder appended.
@@ -181,12 +189,16 @@ def deliver(folder_name: str, resume_pdf, letter_pdf, dirs: list[Path],
             extra_texts: dict[str, str] | None = None) -> list[Path]:
     """
     Give each job its OWN folder: <dir>/<job-applications>/<folder_name>/ holding
-    resume.pdf, cover_letter.pdf, cover_letter.txt, plus any extra_texts
+    resume.pdf, cover_letter.pdf, cover_letter.txt, their .tex sources, plus any extra_texts
     ({filename: text}, e.g. missing_skills.md). Returns the resume paths written.
     """
     resume_pdf = Path(resume_pdf)
     letter_pdf = Path(letter_pdf) if letter_pdf else None
     letter_txt = letter_pdf.with_suffix(".txt") if letter_pdf else None
+    # LaTeX sources (written by render_resume) so a role's documents can be hand-edited.
+    sources = {"resume.tex": resume_pdf.with_suffix(".tex")}
+    if letter_pdf:
+        sources["cover_letter.tex"] = letter_pdf.with_suffix(".tex")
     resumes: list[Path] = []
     for d in dirs:
         job_dir = d / folder_name
@@ -197,6 +209,9 @@ def deliver(folder_name: str, resume_pdf, letter_pdf, dirs: list[Path],
             shutil.copy(letter_pdf, job_dir / "cover_letter.pdf")
         if letter_txt and letter_txt.exists():
             shutil.copy(letter_txt, job_dir / "cover_letter.txt")
+        for fname, src in sources.items():
+            if src.exists():
+                shutil.copy(src, job_dir / fname)
         for fname, text in (extra_texts or {}).items():
             (job_dir / fname).write_text(text, encoding="utf-8")
     return resumes
